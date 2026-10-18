@@ -64,18 +64,33 @@ pub(super) fn read_apps(window: &AppWindow, project: &mut Project) -> Result<()>
         .get_apps()
         .iter()
         .map(|app| {
+            let mut executable = PathBuf::from(app.executable.trim().trim_matches('"'));
+            let mut arguments = app.arguments.to_string();
+            let mut new_console = app.new_console;
+            if executable
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("lnk"))
+            {
+                let resolved = apps::resolve_app(&app.executable)?;
+                executable = resolved.executable;
+                if arguments.trim().is_empty() {
+                    arguments = resolved.arguments;
+                }
+                new_console |= resolved.new_console;
+            }
             Ok(AppConfig {
+                app_id: (!app.app_id.is_empty()).then(|| app.app_id.to_string()),
                 id: Uuid::parse_str(&app.id)?,
                 name: app.name.trim().into(),
-                executable: PathBuf::from(app.executable.trim()),
-                arguments: app.arguments.to_string(),
-                new_console: app.new_console,
+                executable,
+                arguments,
+                new_console,
                 shared: app.shared,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     project.browser = window.get_browser_enabled().then(|| BrowserConfig {
-        executable: PathBuf::from(window.get_browser_executable().trim()),
+        executable: PathBuf::from(window.get_browser_executable().trim().trim_matches('"')),
         urls: window
             .get_browser_urls()
             .lines()
@@ -87,11 +102,11 @@ pub(super) fn read_apps(window: &AppWindow, project: &mut Project) -> Result<()>
     project.validate()
 }
 
-fn form_apps(window: &AppWindow) -> Vec<AppDraft> {
+pub(super) fn form_apps(window: &AppWindow) -> Vec<AppDraft> {
     window.get_apps().iter().collect()
 }
 
-fn set_apps(window: &AppWindow, apps: Vec<AppDraft>) {
+pub(super) fn set_apps(window: &AppWindow, apps: Vec<AppDraft>) {
     window.set_apps(ModelRc::new(VecModel::from(apps)));
     window.set_dirty(true);
 }
@@ -102,6 +117,7 @@ fn add_app(window: &AppWindow, name: String, executable: String) {
         id: Uuid::new_v4().to_string().into(),
         name: name.into(),
         executable: executable.into(),
+        advanced: true,
         ..Default::default()
     });
     set_apps(window, apps);
@@ -440,89 +456,18 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>, persistent: bo
             }
         }
     });
+    super::app_picker::setup(window);
     let weak = window.as_weak();
-    window.on_browse_app(move |index| {
+    window.on_browse_folder(move || {
         if let Some(window) = weak.upgrade() {
-            match pick(&window, false) {
+            match pick(&window, true) {
                 Ok(Some(path)) => {
-                    let mut apps = form_apps(&window);
-                    if let Some(app) = apps.get_mut(index as usize) {
-                        app.executable = path.to_string_lossy().into_owned().into();
-                        if app.name.trim().is_empty() {
-                            app.name = path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned()
-                                .into();
-                        }
-                        set_apps(&window, apps);
-                    }
+                    window.set_project_folder(path.to_string_lossy().into_owned().into());
+                    window.set_dirty(true);
                 }
                 Ok(None) => {}
                 Err(error) => notice(&window, &format!("{error:#}"), true),
             }
-        }
-    });
-    for folder in [true, false] {
-        let weak = window.as_weak();
-        let callback = move || {
-            if let Some(window) = weak.upgrade() {
-                match pick(&window, folder) {
-                    Ok(Some(path)) => {
-                        let path = path.to_string_lossy().into_owned().into();
-                        if folder {
-                            window.set_project_folder(path);
-                        } else {
-                            window.set_browser_executable(path);
-                        }
-                        window.set_dirty(true);
-                    }
-                    Ok(None) => {}
-                    Err(error) => notice(&window, &format!("{error:#}"), true),
-                }
-            }
-        };
-        if folder {
-            window.on_browse_folder(callback);
-        } else {
-            window.on_browse_browser(callback);
-        }
-    }
-    // Cache the read-only catalog once, outside the UI thread. Searching filters this
-    // small snapshot; it does not walk the filesystem or registry on every keypress.
-    let catalog = Arc::new(Mutex::new(Vec::<apps::InstalledApp>::new()));
-    let worker_catalog = catalog.clone();
-    let weak = window.as_weak();
-    std::thread::spawn(move || {
-        *worker_catalog.lock().unwrap() = apps::installed_apps();
-        let _ = weak.upgrade_in_event_loop(|window| window.invoke_search_apps());
-    });
-    let weak = window.as_weak();
-    window.on_search_apps(move || {
-        if let Some(window) = weak.upgrade() {
-            let query = window.get_app_search().to_lowercase();
-            let rows: Vec<_> = catalog
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|app| app.name.to_lowercase().contains(&query))
-                .take(6)
-                .map(|app| InstalledRow {
-                    name: app.name.clone().into(),
-                    executable: app.executable.to_string_lossy().into_owned().into(),
-                })
-                .collect();
-            window.set_installed_apps(ModelRc::new(VecModel::from(rows)));
-        }
-    });
-    let weak = window.as_weak();
-    window.on_choose_app(move |index| {
-        if let Some(window) = weak.upgrade()
-            && let Some(app) = window.get_installed_apps().row_data(index as usize)
-        {
-            add_app(&window, app.name.to_string(), app.executable.to_string());
-            window.set_picker_visible(false);
         }
     });
 }

@@ -27,7 +27,7 @@ Provide one central Jurabox management window for all projects, accessible from 
 - Configure apps, browser links, startup actions, services, readiness, dependencies, and inactivity policy through this UI.
 - Show service state and recent output, project countdowns, Keep running badges, failures, and actions needed.
 - Show Changes pending when saved settings differ from the running session's setup.
-- Add apps through a searchable installed-app picker, Browse fallback, and optional advanced launch arguments.
+- Add apps by their Windows display names through a searchable, scrollable picker. Fill in launch details automatically; keep paths, arguments, and console controls under collapsed Advanced. Browse also accepts ordinary Start Menu shortcuts. The browser chooser lists Chrome and Edge by name. See the [app selection decision](adr/0009-select-installed-apps-by-name.md).
 - Add services explicitly; automatic discovery from project files is deferred.
 - A command requiring a working folder must have an explicit location or use the project's configured folder. A folderless project does not imply an arbitrary working directory.
 

@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use std::{collections::HashSet, path::Path};
 use windows::{
     Win32::{
-        Foundation::{BOOL, CloseHandle, FILETIME, HWND, LPARAM},
+        Foundation::{BOOL, CloseHandle, ERROR_SUCCESS, FILETIME, HWND, LPARAM},
+        Storage::Packaging::Appx::GetApplicationUserModelId,
         System::Threading::{
             GetProcessTimes, OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
             QueryFullProcessImageNameW,
@@ -36,6 +37,32 @@ pub fn path_key(path: &Path) -> String {
 }
 
 impl AppWindow {
+    pub fn matches_app(&self, config: &crate::projects::AppConfig, executable_key: &str) -> bool {
+        let Some(app_id) = &config.app_id else {
+            return self.executable == executable_key;
+        };
+        // Query the same process incarnation represented by this window. A
+        // package match only helps window attribution, never workload ownership.
+        if !self.is_alive() {
+            return false;
+        }
+        unsafe {
+            let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, self.process)
+            else {
+                return false;
+            };
+            let mut value = [0; 512];
+            let mut length = value.len() as u32;
+            let result = GetApplicationUserModelId(handle, &mut length, PWSTR(value.as_mut_ptr()));
+            let matches = result == ERROR_SUCCESS
+                && length > 0
+                && length as usize <= value.len()
+                && String::from_utf16_lossy(&value[..length as usize - 1]) == *app_id;
+            let _ = CloseHandle(handle);
+            matches && self.is_alive()
+        }
+    }
+
     pub fn hwnd(&self) -> HWND {
         HWND(self.handle as *mut _)
     }

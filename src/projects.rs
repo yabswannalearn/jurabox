@@ -31,6 +31,8 @@ pub struct AppConfig {
     pub id: Uuid,
     pub name: String,
     pub executable: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
     #[serde(default)]
     pub arguments: String,
     #[serde(default)]
@@ -42,18 +44,34 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn validate(&self) -> Result<()> {
         ensure!(!self.name.trim().is_empty(), "Give each app a name.");
-        ensure!(
-            self.executable.is_absolute(),
-            "Choose a full executable path for {}.",
-            self.name
-        );
-        ensure!(
-            self.executable
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")),
-            "Choose an .exe application for {}. Run scripts through a configured terminal app.",
-            self.name
-        );
+        if let Some(id) = &self.app_id {
+            ensure!(
+                !id.is_empty()
+                    && id.len() <= 256
+                    && id.contains('!')
+                    && !id
+                        .chars()
+                        .any(|value| value.is_control() || value.is_whitespace()),
+                "Choose this Windows app again from Add app."
+            );
+            ensure!(
+                self.executable.as_os_str().is_empty() && !self.new_console,
+                "A Windows app cannot also have an executable or console setting."
+            );
+        } else {
+            ensure!(
+                self.executable.is_absolute(),
+                "Choose an app for {} using Add app or Browse.",
+                self.name
+            );
+            ensure!(
+                self.executable
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")),
+                "Choose an .exe application for {}. Run scripts through a configured terminal app.",
+                self.name
+            );
+        }
         ensure!(
             !self.arguments.contains('\0'),
             "App arguments cannot contain a null character."
@@ -163,7 +181,7 @@ pub struct ProjectFile {
 impl Default for ProjectFile {
     fn default() -> Self {
         Self {
-            version: 5,
+            version: 6,
             projects: Vec::new(),
         }
     }
@@ -188,7 +206,7 @@ impl ProjectFile {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 5,
+            self.version == 6,
             "This project file uses unsupported version {}. Keep the file and use a compatible Jurabox version.",
             self.version
         );
@@ -245,8 +263,8 @@ impl ProjectStore {
                 self.path.display()
             )
         })?;
-        if matches!(data.version, 1..=4) {
-            data.version = 5;
+        if matches!(data.version, 1..=5) {
+            data.version = 6;
         }
         data.validate()?;
         Ok(data)
@@ -324,7 +342,7 @@ mod tests {
         fs::write(&path, &old).unwrap();
         let store = ProjectStore::new(path.clone());
         let data = store.load().unwrap();
-        assert_eq!(data.version, 5);
+        assert_eq!(data.version, 6);
         assert!(data.projects[0].apps.is_empty() && data.projects[0].browser.is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         store.save(&data).unwrap();
@@ -337,6 +355,7 @@ mod tests {
         let store = ProjectStore::new(directory.path().join("projects.json"));
         let mut entry = project("Tools");
         entry.apps.push(AppConfig {
+            app_id: None,
             id: Uuid::new_v4(),
             name: "Editor".into(),
             executable: r"C:\Apps\editor.exe".into(),
@@ -369,6 +388,44 @@ mod tests {
     }
 
     #[test]
+    fn windows_apps_round_trip_and_old_executable_settings_migrate_on_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("projects.json");
+        let store = ProjectStore::new(path.clone());
+        let mut entry = project("Windows apps");
+        let app = AppConfig {
+            id: Uuid::new_v4(),
+            name: "Example".into(),
+            executable: PathBuf::new(),
+            app_id: Some("Example_123!App".into()),
+            arguments: String::new(),
+            new_console: false,
+            shared: true,
+        };
+        entry.apps.push(app.clone());
+        let mut data = ProjectFile::default();
+        data.upsert(entry);
+        store.save(&data).unwrap();
+        assert_eq!(store.load().unwrap(), data);
+        let mut invalid = app;
+        invalid.executable = r"C:\Apps\other.exe".into();
+        assert!(invalid.validate().is_err());
+        invalid.executable.clear();
+        invalid.app_id = Some("".into());
+        assert!(invalid.validate().is_err());
+        // A v5 app has no app_id. Loading adds no writes and retains every
+        // original launch field; only an explicit save upgrades its version.
+        data.projects[0].apps[0].app_id = None;
+        data.projects[0].apps[0].executable = r"C:\Apps\editor.exe".into();
+        let mut value = serde_json::to_value(&data).unwrap();
+        value["version"] = 5.into();
+        let old = serde_json::to_vec(&value).unwrap();
+        fs::write(&path, &old).unwrap();
+        assert_eq!(store.load().unwrap(), data);
+        assert_eq!(fs::read(&path).unwrap(), old);
+    }
+
+    #[test]
     fn invalid_save_preserves_previous_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("projects.json");
@@ -385,11 +442,11 @@ mod tests {
     #[test]
     fn unsupported_versions_and_duplicate_ids_are_rejected() {
         let mut data = ProjectFile {
-            version: 6,
+            version: 7,
             ..Default::default()
         };
         assert!(data.validate().is_err());
-        data.version = 5;
+        data.version = 6;
         let entry = project("First");
         data.projects.extend([entry.clone(), entry]);
         assert!(data.validate().is_err());

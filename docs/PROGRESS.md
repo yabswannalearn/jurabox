@@ -327,3 +327,22 @@ The existing multiprocess `session-check --exercise` and its production manager 
 Docker/mixed-session crash recovery needs durable engine/container creation evidence and frozen setup. Sudden reboot/logoff can lose both a keeper and an unsealed job; those records remain blocked until reliable boot/session evidence or an explicit resolution flow is implemented. No actual reboot/logoff test was performed. Automatic orphan-record/snapshot cleanup, durable bounded output, helper/update coordination, and release resource measurements remain open.
 
 Inactivity timers, Keep running, lock/sleep handling, return-during-stop, environment override forms, and broader app/elevation/scaling pilots remain. Stored inactivity settings still do not stop workloads.
+
+## App setup usability: choose installed apps by name
+
+Implemented on 2026-10-18 after the local pilot exposed an awkward path-based app form and a rejected quoted Zed Start Menu shortcut. The [app selection ADR](adr/0009-select-installed-apps-by-name.md) records the updated behavior.
+
+- **+ Add app** opens a searchable, scrollable chooser using Windows display names. Selected apps fill their launch details automatically. App cards show names and the explicit sharing option; technical fields stay under collapsed **Advanced**.
+- Discovery reads the Windows AppsFolder on a worker thread, with App Paths and known-tool fallbacks. The management thread filters a cached snapshot. This host returned 322 entries, including 61 Windows application IDs. ChatGPT appeared as one packaged choice.
+- Ordinary Start Menu shortcuts and quoted Copy as path text resolve to an executable and their original arguments without executing the shortcut. CMD/PowerShell selection automatically enables a fresh console.
+- Packaged targets use Windows activation and their stable application IDs. Attribution queries application IDs while retaining existing window-incarnation checks. Existing shared/private rules and manual window assignment remain applicable.
+- Project browsers are chosen as Google Chrome or Microsoft Edge, with duplicate shortcut variants removed. Optional path configuration is under Advanced.
+- Settings schema 6 reads versions 1–5 without rewriting until Save. Existing app, service, Compose, readiness, and dependency settings are preserved.
+
+The live `ui-check` passed discovery, keyboard search focus, case-insensitive search, empty results, selection, automatic console setup, browser filtering, Windows-app selection/save/reload, cancellation without edits, and the existing project/save/error/tray flows. Screenshots at 1040×740 and 820×650 were inspected, including the ChatGPT search and browser chooser. Catalog inspection and UI selection did not launch the user's installed apps.
+
+`cargo test --locked --offline` passed all 34 tests, including quoted shortcut resolution/argument preservation, packaged-target round trips and invalid-target rejection, old settings migration without a write, missing-app activation errors, and preserving an existing multithreaded COM apartment during activation.
+
+`cargo fmt --all --check`, `git diff --check`, and `cargo clippy --locked --offline --all-targets -- -D warnings` passed.
+
+`workspace-check --exercise` passed launch attribution, partial failures, shared movement, unchanged relaunch, manual assignment, private/shared conflicts, and restoration of the original desktops. `session-check --exercise` passed warm reconnection, retained logs, the real manager UI, and remote Force/Start/quit flows. Package-specific launch/reuse behavior, elevated windows, and broader scaling/accessibility pilots remain to validate.

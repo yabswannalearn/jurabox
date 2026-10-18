@@ -14,6 +14,7 @@ pub(super) fn run(workspaces: &mut Workspaces, cleanup: &mut Cleanup) -> Result<
     )
     .join("System32/cmd.exe");
     let app = AppConfig {
+        app_id: None,
         id: Uuid::new_v4(),
         name: "CMD fixture".into(),
         executable,

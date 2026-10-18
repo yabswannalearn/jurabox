@@ -1,8 +1,8 @@
 import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
 
 export struct ProjectRow { name: string, folder: string }
-export struct AppDraft { id: string, name: string, executable: string, arguments: string, new-console: bool, shared: bool }
-export struct InstalledRow { name: string, executable: string }
+export struct AppDraft { id: string, name: string, executable: string, app-id: string, arguments: string, new-console: bool, shared: bool, advanced: bool }
+export struct InstalledRow { name: string, executable: string, app-id: string, arguments: string, new-console: bool }
 export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool }
 export struct WindowOptionRow { id: string, title: string, executable: string, assignment: string, available: bool }
 export struct WorkloadDraft { id: string, name: string, one-shot: bool, compose: bool, compose-file: string, docker-context: string, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int, readiness: int, readiness-endpoint: string, readiness-timeout: int, dependencies: string }
@@ -43,7 +43,7 @@ export component AppWindow inherits Window {
     in property <int> selected-index: -1;
     in property <bool> editing-existing;
     in property <bool> busy;
-    private property <bool> form-enabled: !root.busy && !root.window-picker-visible;
+    private property <bool> form-enabled: !root.busy && !root.window-picker-visible && !root.picker-visible;
     in property <bool> workspace-busy;
     in property <bool> session-open;
     in property <bool> managed-live;
@@ -62,8 +62,13 @@ export component AppWindow inherits Window {
     in property <[InstalledRow]> installed-apps;
     in-out property <string> app-search;
     in-out property <bool> picker-visible;
+    in property <bool> apps-loading: true;
+    in property <string> picker-error;
+    in-out property <bool> picking-browser;
     in-out property <bool> browser-enabled;
     in-out property <string> browser-executable;
+    in property <string> browser-name: "Choose a browser";
+    in-out property <bool> browser-advanced;
     in-out property <string> browser-urls;
     in-out property <string> project-name;
     in-out property <string> project-folder;
@@ -89,6 +94,11 @@ export component AppWindow inherits Window {
     callback browse-browser();
     callback search-apps();
     callback choose-app(int);
+    callback open-app-picker(bool);
+    callback browse-new-app();
+    callback browser-path-changed();
+    callback focus-app-search();
+    focus-app-search => { app-search-edit.focus(); }
     callback open-project();
     callback relaunch-project();
     callback close-project();
@@ -299,18 +309,12 @@ export component AppWindow inherits Window {
                         Text { text: "A project can have a name without a folder."; font-size: 12px; color: #65778d; }
                         Rectangle { height: 12px; background: transparent; }
                         Text { text: "Apps to open"; font-size: 17px; font-weight: 600; color: #22313d; }
-                        Text { text: "Add an app, then choose its executable and optional arguments."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                        Text { text: "Choose the apps you want to open with this project."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                         HorizontalLayout {
                             alignment: start;
-                            Button { text: "Find installed app"; enabled: root.form-enabled; clicked => { root.picker-visible = !root.picker-visible; root.search-apps(); } }
-                            Button { text: "+ Custom app"; enabled: root.form-enabled; clicked => { root.add-app(); } }
+                            Button { text: "+ Add app"; enabled: root.form-enabled; clicked => { root.open-app-picker(false); } }
                         }
-                        if root.picker-visible: VerticalLayout {
-                            spacing: 6px;
-                            LineEdit { text <=> root.app-search; placeholder-text: "Search apps registered with Windows"; edited => { root.search-apps(); } }
-                            for app[index] in root.installed-apps: Button { text: app.name; enabled: root.form-enabled; clicked => { root.choose-app(index); } Tooltip { text: @markdown("\{app.executable}"); } }
-                            Text { text: "Showing up to 6 matches. Use Custom app for anything missing."; font-size: 11px; color: #65778d; wrap: word-wrap; }
-                        }
+                        if root.apps.length == 0: Text { text: "No apps added yet."; font-size: 12px; color: #65778d; }
                         for app[index] in root.apps: Rectangle {
                             background: #f3f6f8;
                             border-radius: 6px;
@@ -318,29 +322,49 @@ export component AppWindow inherits Window {
                                 padding: 12px;
                                 spacing: 8px;
                                 HorizontalLayout {
-                                    LineEdit { text <=> app.name; placeholder-text: "App name"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    spacing: 8px;
+                                    Text { text: app.name != "" ? app.name : "Custom app"; color: #22313d; font-weight: 600; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                                    Button { text: app.advanced ? "Hide advanced" : "Advanced"; enabled: root.form-enabled; clicked => { app.advanced = !app.advanced; } }
                                     Button { text: "Remove"; enabled: root.form-enabled; clicked => { root.remove-app(index); } }
                                 }
-                                HorizontalLayout {
-                                    LineEdit { text <=> app.executable; placeholder-text: "Full path to the .exe"; enabled: root.form-enabled; edited => { root.dirty = true; } }
-                                    Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-app(index); } }
+                                CheckBox { text: "Use this app across projects"; checked <=> app.shared; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                                if app.shared: Text { text: "Its assigned window follows the active project."; font-size: 11px; color: #65778d; wrap: word-wrap; }
+                                if app.advanced: VerticalLayout {
+                                    spacing: 8px;
+                                    Text { text: "App name"; font-size: 12px; color: #65778d; }
+                                    LineEdit { text <=> app.name; placeholder-text: "App name"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    if app.app-id == "": VerticalLayout {
+                                        spacing: 8px;
+                                        Text { text: "Application or shortcut"; font-size: 12px; color: #65778d; }
+                                        HorizontalLayout {
+                                            LineEdit { text <=> app.executable; placeholder-text: "Choose an app or shortcut"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                            Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-app(index); } }
+                                        }
+                                        CheckBox { text: "Open a console window (CMD / PowerShell)"; checked <=> app.new-console; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                                    }
+                                    if app.app-id != "": Text { text: "Windows handles launching this installed app."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                                    LineEdit { text <=> app.arguments; placeholder-text: "Launch arguments (optional)"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Text { text: "Arguments use Windows quoting. Use {folder} to pass the project folder."; font-size: 11px; color: #65778d; wrap: word-wrap; }
                                 }
-                                LineEdit { text <=> app.arguments; placeholder-text: "Arguments (optional), e.g. --new-window \"{folder}\""; enabled: root.form-enabled; edited => { root.dirty = true; } }
-                                CheckBox { text: "Open a console window (CMD / PowerShell)"; checked <=> app.new-console; enabled: root.form-enabled; toggled => { root.dirty = true; } }
-                                CheckBox { text: "Shared app: follow the active project"; checked <=> app.shared; enabled: root.form-enabled; toggled => { root.dirty = true; } }
                             }
                         }
-                        Text { text: "Arguments use Windows quoting. {folder} passes the project folder. Shared reuse requires a single matching window; other apps need their own new-window option."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                         Rectangle { height: 12px; background: transparent; }
                         Text { text: "Project browser"; font-size: 17px; font-weight: 600; color: #22313d; }
-                        CheckBox { text: "Open links in a new Chrome or Edge window"; checked <=> root.browser-enabled; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                        CheckBox { text: "Open website links with this project"; checked <=> root.browser-enabled; enabled: root.form-enabled; toggled => { root.dirty = true; if root.browser-enabled && root.browser-executable == "" { root.open-app-picker(true); } } }
                         if root.browser-enabled: VerticalLayout {
                             spacing: 8px;
                             HorizontalLayout {
-                                LineEdit { text <=> root.browser-executable; placeholder-text: "Full path to chrome.exe or msedge.exe"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                spacing: 8px;
+                                Text { text: root.browser-name; color: #22313d; font-weight: 600; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                                Button { text: "Choose browser"; enabled: root.form-enabled; clicked => { root.open-app-picker(true); } }
+                                Button { text: root.browser-advanced ? "Hide advanced" : "Advanced"; enabled: root.form-enabled; clicked => { root.browser-advanced = !root.browser-advanced; } }
+                            }
+                            if root.browser-advanced: HorizontalLayout {
+                                LineEdit { text <=> root.browser-executable; placeholder-text: "Chrome or Edge application path"; enabled: root.form-enabled; edited => { root.browser-path-changed(); root.dirty = true; } }
                                 Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-browser(); } }
                             }
-                            TextEdit { text <=> root.browser-urls; min-height: 100px; preferred-height: 100px; vertical-stretch: 0; placeholder-text: "One https:// link per line"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                            Text { text: "Links open together in a new browser window. Add one link per line."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                            TextEdit { text <=> root.browser-urls; min-height: 100px; preferred-height: 100px; vertical-stretch: 0; placeholder-text: "https://example.com"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                         }
                         Rectangle { height: 20px; background: transparent; }
                         Text { text: "Services and startup actions"; font-size: 17px; font-weight: 600; color: #22313d; }
@@ -489,6 +513,51 @@ export component AppWindow inherits Window {
                     if root.editing-existing: Button { text: "Delete project…"; enabled: root.form-enabled && !root.workspace-busy && !root.session-open && !root.dirty && !root.delete-pending; clicked => { root.delete-pending = true; } }
                 }
                 Text { text: "Closing this window keeps Jurabox in the system tray."; color: #65778d; font-size: 11px; }
+            }
+        }
+    }
+    Rectangle {
+        visible: root.picker-visible;
+        background: #22313d80;
+        TouchArea { clicked => {} }
+        Rectangle {
+            width: min(parent.width - 64px, 620px);
+            height: min(parent.height - 64px, 560px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 22px;
+                spacing: 12px;
+                Text { text: root.picking-browser ? "Choose a browser" : "Add an app"; font-family: "Bahnschrift"; font-size: 26px; color: #22313d; }
+                Text { text: root.picking-browser ? "Choose Chrome or Edge for your project links." : "Select an app installed on this PC. Jurabox handles the setup."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                app-search-edit := LineEdit { text <=> root.app-search; placeholder-text: root.picking-browser ? "Search browsers" : "Search apps, e.g. Zed or ChatGPT"; edited => { root.search-apps(); } accepted => { if root.installed-apps.length == 1 { root.choose-app(0); } } }
+                ScrollView {
+                    min-height: 100px;
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 6px;
+                        for app[index] in root.installed-apps: Button {
+                            text: app.name;
+                            min-height: 38px;
+                            clicked => { root.choose-app(index); }
+                        }
+                        if root.installed-apps.length == 0: Text {
+                            text: root.apps-loading ? "Finding installed apps…" : "No apps found. Try another name or browse for the app.";
+                            color: #65778d;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if root.picker-error != "": Text { text: root.picker-error; font-size: 12px; color: #922d25; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "Browse for an app…"; clicked => { root.browse-new-app(); } }
+                    Rectangle { background: transparent; horizontal-stretch: 1; }
+                    Button { text: "Cancel"; clicked => { root.picker-visible = false; } }
+                }
             }
         }
     }

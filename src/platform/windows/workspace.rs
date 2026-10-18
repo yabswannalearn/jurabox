@@ -372,6 +372,7 @@ fn configured_apps(project: &Project) -> Vec<AppConfig> {
     if let Some(browser) = &project.browser {
         // A stable reserved ID is local to each session, never a shared service identity.
         entries.push(AppConfig {
+            app_id: None,
             id: Uuid::nil(),
             name: "Project browser".into(),
             executable: browser.executable.clone(),
@@ -386,22 +387,23 @@ fn configured_apps(project: &Project) -> Vec<AppConfig> {
 fn same_launch(left: &AppConfig, right: &AppConfig) -> bool {
     left.id == right.id
         && left.executable == right.executable
+        && left.app_id == right.app_id
         && left.arguments == right.arguments
         && left.new_console == right.new_console
         && left.shared == right.shared
 }
 
 fn launch_app(config: &AppConfig, project: &Project) -> Result<Option<AppWindow>> {
+    let executable_key = app_windows::path_key(&config.executable);
     ensure!(
-        config.executable.is_file(),
+        config.app_id.is_some() || config.executable.is_file(),
         "Executable not found: {}",
         config.executable.display()
     );
     if config.shared {
-        let key = app_windows::path_key(&config.executable);
         let matching: Vec<_> = app_windows::all()?
             .into_iter()
-            .filter(|window| window.executable == key)
+            .filter(|window| window.matches_app(config, &executable_key))
             .collect();
         ensure!(
             matching.len() <= 1,
@@ -412,27 +414,7 @@ fn launch_app(config: &AppConfig, project: &Project) -> Result<Option<AppWindow>
         }
     }
     let before = app_windows::handles()?;
-    let mut command = Command::new(&config.executable);
-    if config.id.is_nil() {
-        let browser = project.browser.as_ref().context("Missing browser setup.")?;
-        command.arg("--new-window").args(&browser.urls);
-    } else {
-        let mut args = apps::parse_arguments(&config.arguments)?;
-        for argument in &mut args {
-            if argument.contains("{folder}") {
-                let folder = project
-                    .folder
-                    .as_ref()
-                    .context("This app uses {folder}; choose a project folder first.")?;
-                *argument = argument.replace("{folder}", &folder.to_string_lossy());
-            }
-        }
-        command.args(args);
-    }
-    if let Some(folder) = &project.folder {
-        command.current_dir(folder);
-    }
-    if config.new_console {
+    if let Some(app_id) = &config.app_id {
         let arguments = if config.arguments.contains("{folder}") {
             config.arguments.replace(
                 "{folder}",
@@ -445,25 +427,62 @@ fn launch_app(config: &AppConfig, project: &Project) -> Result<Option<AppWindow>
         } else {
             config.arguments.clone()
         };
-        apps::start_console(&config.executable, &arguments, project.folder.as_deref())
-            .context("Windows could not start this console application.")?;
+        apps::activate(app_id, &arguments)?;
     } else {
-        command.creation_flags(0x08000000);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let _child = command
-            .spawn()
-            .context("Windows could not start this application.")?;
+        let mut command = Command::new(&config.executable);
+        if config.id.is_nil() {
+            let browser = project.browser.as_ref().context("Missing browser setup.")?;
+            command.arg("--new-window").args(&browser.urls);
+        } else {
+            let mut args = apps::parse_arguments(&config.arguments)?;
+            for argument in &mut args {
+                if argument.contains("{folder}") {
+                    let folder = project
+                        .folder
+                        .as_ref()
+                        .context("This app uses {folder}; choose a project folder first.")?;
+                    *argument = argument.replace("{folder}", &folder.to_string_lossy());
+                }
+            }
+            command.args(args);
+        }
+        if let Some(folder) = &project.folder {
+            command.current_dir(folder);
+        }
+        if config.new_console {
+            let arguments = if config.arguments.contains("{folder}") {
+                config.arguments.replace(
+                    "{folder}",
+                    &project
+                        .folder
+                        .as_ref()
+                        .context("Choose a project folder for {folder}.")?
+                        .to_string_lossy(),
+                )
+            } else {
+                config.arguments.clone()
+            };
+            apps::start_console(&config.executable, &arguments, project.folder.as_deref())
+                .context("Windows could not start this console application.")?;
+        } else {
+            command.creation_flags(0x08000000);
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _child = command
+                .spawn()
+                .context("Windows could not start this application.")?;
+        }
     }
-    let key = app_windows::path_key(&config.executable);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let windows = app_windows::all()?;
         let matching: Vec<_> = windows
             .into_iter()
-            .filter(|window| window.executable == key && !before.contains(&window.handle))
+            .filter(|window| {
+                !before.contains(&window.handle) && window.matches_app(config, &executable_key)
+            })
             .collect();
         if matching.len() == 1 {
             let window = matching.into_iter().next().unwrap();
