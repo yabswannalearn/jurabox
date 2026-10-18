@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionApp {
     pub project: Uuid,
     pub app: Uuid,
@@ -10,7 +10,7 @@ pub struct SessionApp {
     pub shared: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct WindowOption {
     pub id: Uuid,
     pub title: String,
@@ -46,10 +46,9 @@ impl Workspaces {
             app,
             windows: HashMap::new(),
         };
-        for window in app_windows::all()?
-            .into_iter()
-            .filter(|window| window.process != std::process::id())
-        {
+        for window in app_windows::all()?.into_iter().filter(|window| {
+            window.process != std::process::id() && Some(window.process) != self.manager_process
+        }) {
             let id = Uuid::new_v4();
             let owners: Vec<_> = self
                 .sessions

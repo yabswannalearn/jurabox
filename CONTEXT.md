@@ -83,6 +83,10 @@ _Avoid_: Resume when it implies restoring the exact execution state of an interr
 Resuming lifecycle management of a surviving **Managed service** after Jurabox reopens.
 _Avoid_: Adoption of an unknown service, relaunch.
 
+**Session host**:
+The background Jurabox process that retains open **Project sessions**, original ownership handles, and recent output while the manager is closed.
+_Avoid_: Separate installed server, saved project definition.
+
 **Relaunch**:
 Starting a new **Project session** using the project's latest **Saved setup**.
 _Avoid_: Reactivation, switching projects.

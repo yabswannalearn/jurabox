@@ -20,12 +20,15 @@ export component AppTray inherits SystemTrayIcon {
         MenuItem { title: "Show Jurabox"; activated => { root.show-window(); } }
         MenuItem { title: "New project"; activated => { root.new-project(); } }
         MenuSeparator {}
-        MenuItem { title: "Quit Jurabox"; activated => { root.quit(); } }
+        MenuItem { title: "Quit and leave services running"; activated => { root.quit(); } }
         MenuItem { title: "Stop services and quit"; activated => { root.stop-and-quit(); } }
     }
 }
 
 export component AppWindow inherits Window {
+    in property <bool> session-host-enabled: false;
+    in property <bool> session-connected: false;
+    callback leave-and-quit();
     title: "Jurabox";
     icon: @image-url("assets/jurabox.svg");
     preferred-width: 1040px;
@@ -114,7 +117,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Save project"; shortcut: @keys(Control + S); enabled: root.form-enabled && !root.window-picker-visible; activated => { root.save-project(); } }
             MenuSeparator {}
             MenuItem { title: "Hide to tray"; activated => { root.hide-window(); } }
-            MenuItem { title: "Quit Jurabox"; activated => { root.quit(); } }
+            MenuItem { title: "Quit and leave services running"; activated => { root.quit(); } }
             MenuItem { title: "Stop services and quit"; activated => { root.stop-and-quit(); } }
         }
         Menu {

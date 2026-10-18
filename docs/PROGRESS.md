@@ -261,3 +261,36 @@ The extended `ui-check` passed real Compose form add/save/reload/remove without 
 ### Remaining work
 
 Durable session/ownership records, verified reconnection, a leave-running exit, cleanup of abandoned runtime snapshots, environment override forms, inactivity timers, Keep running, and richer progress/cancellation remain. A manager restart does not reconnect containers; unknown leftovers are reported as conflicts. No automatic inactivity stop is enabled in this slice. Remote contexts, broader Compose compatibility, full application/elevation/scaling/accessibility pilots, and release-performance measurements remain open.
+
+## Lifecycle: Background sessions and manager reconnection
+
+The user requested continuing after the Compose phase. [PR #6](https://github.com/yabswannalearn/jurabox/pull/6) was merged as `e192424`, preserving phase commit `f34f8db`. This slice starts from that main on `codex/session-host`.
+
+### Implemented scope
+
+- A hidden same-executable Rust session host, without Slint initialization, retaining the existing workspace/service objects and their original ownership handles independently of the manager process.
+- A private local named pipe with owner/SYSTEM access, remote-client rejection, first-instance protection, server creation-identity verification, client installation/session checks, a random journal token, and bounded message framing.
+- An exclusive kernel file handle per settings file, a separate versioned atomic host journal, and session intent flushed before launching work. Saved project settings remain independent.
+- Reconnection to the same live host: original project setup, desktop GUIDs, window associations, command jobs, Compose controllers, manual-stop state, and bounded output tails survive manager exit/disconnection. No process/container adoption or replacement launch is involved.
+- Explicit Quit and leave services running in the manager and tray. Background output capture remains bounded; workspace/readiness scheduling and periodic Docker inspection pause when disconnected, and queued starts require explicit Start after reconnect. Reconnection refreshes container state and reconciles shared windows. Already dispatched commands/Docker operations can finish.
+- Stop services and quit across the pipe, with original shutdown instructions, failure retention, explicit Force stop, successful response delivery, and clean host exit. Empty hosts exit when the manager disconnects.
+- Lost/mismatched/malformed/future host records are preserved and block new launches. Connection failure still permits configuration editing and manager exit; deletion is blocked until sessions can be resolved. Both host and manager windows are excluded from assignment choices; picker snapshots expire on disconnect.
+- Dedicated multiprocess/real-UI exercises using private journals and finite commands, with an optional private Docker fixture. Existing direct-actor UI checks remain available for isolated feature regression tests.
+
+The [session-host ADR](adr/0007-retain-sessions-in-a-background-rust-process.md) records why one Rust helper is justified and separates manager reconnection from cold recovery.
+
+### Validation
+
+`cargo fmt --check`, `cargo build --locked --offline`, `cargo test --locked --offline` (25 tests), and `cargo clippy --locked --offline --all-targets -- -D warnings` passed on the Windows 11 development host. Added unit coverage rejects oversized/truncated frames and preserves malformed/unsupported runtime journals.
+
+The real `session-check --exercise` passed leave-running and abrupt connection loss, unchanged host identity/generation, original service/output/setup retention, duplicate prevention, manually stopped state, cancellation of queued dependent starts, normal stop, rapid repeated quit/reconnect, clean host shutdown, and preserved lost-host refusal. Negative cases reject a live PID with a different creation time and a client with the wrong token. The exercise's real manager UI reconnects through the production pipe, retains logs, keeps the window open after failed stop-and-quit, performs scoped Force stop/Start, and exits while leaving its service alive. Reconnection and stop-failure snapshots were inspected. Final quit responses are drained before the pipe disconnects; normal session removal joins Compose workers for private-snapshot cleanup.
+
+With `JURABOX_CHECK_DOCKER=1`, the exercise passed real Compose reconnection, exact container identity retention, remote normal Stop/Start, and frozen setup after the original source was edited to invalid content. Docker Desktop was stopped initially and started for validation. The finite fixture uses network mode none and tmpfs at the image's anonymous volume location; it allocates no networks or volumes. Its container was removed, the Docker volume inventory was unchanged, and the pre-existing user containers retained their identities and running/stopped states.
+
+Existing core command/readiness checks and service UI checks passed, including raw CMD/PowerShell output, owned children, dependency coordination, one-second readiness Retry, manual stops, old-session shutdown, and failed Close/relaunch/quit retention. The settings/tray UI check passed. Assignment and workspace exercises passed with real Edge links and a CMD/terminal-host fixture, restoring the original ordered desktops and active desktop and closing their owned windows. These checks do not establish general app/Compose compatibility or release performance.
+
+### Remaining work
+
+This is manager recovery while the original session host survives. Loss of the host itself, logoff/reboot, cold recovery of independently surviving containers/commands, and an in-app resolution flow for uncertain records remain unfinished. Such records currently block launches rather than silently replacing work. Output is bounded host memory and is lost with the host. Abandoned snapshot cleanup and executable-update coordination also remain.
+
+Inactivity timers, Keep running, lock/sleep handling, return-during-stop behavior, environment override forms, and richer cancellation/progress remain. No automatic inactivity stop is enabled. Full application/elevation/scaling/accessibility pilots and release-performance measurements remain open.

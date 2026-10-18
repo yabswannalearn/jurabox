@@ -2,6 +2,8 @@ mod platform;
 mod projects;
 #[cfg(windows)]
 mod services;
+#[cfg(windows)]
+mod session_host;
 mod ui;
 
 use anyhow::{Result, bail};
@@ -20,6 +22,10 @@ enum Command {
     ServiceCheck,
     ServiceUiCheck,
     ComposeCheck,
+    SessionCheck,
+    SessionHost {
+        journal: std::path::PathBuf,
+    },
     ServiceFixture {
         mode: String,
         folder: std::path::PathBuf,
@@ -44,6 +50,10 @@ fn parse_command(args: &[String]) -> Result<Command> {
         ["service-check", "--exercise"] => Ok(Command::ServiceCheck),
         ["service-ui-check", "--exercise"] => Ok(Command::ServiceUiCheck),
         ["compose-check", "--exercise"] => Ok(Command::ComposeCheck),
+        ["session-check", "--exercise"] => Ok(Command::SessionCheck),
+        ["_session-host", journal] => Ok(Command::SessionHost {
+            journal: (*journal).into(),
+        }),
         ["_service-fixture", mode, folder] => Ok(Command::ServiceFixture {
             mode: (*mode).into(),
             folder: (*folder).into(),
@@ -56,7 +66,8 @@ fn parse_command(args: &[String]) -> Result<Command> {
         | ["assignment-check"]
         | ["service-check"]
         | ["service-ui-check"]
-        | ["compose-check"] => bail!(
+        | ["compose-check"]
+        | ["session-check"] => bail!(
             "This check requires --exercise: it temporarily switches desktops and opens test windows"
         ),
         _ => bail!("unknown command; run jurabox --help for usage"),
@@ -73,6 +84,27 @@ fn run() -> Result<()> {
         Command::WorkspaceCheck => platform::workspace_check(),
         Command::AssignmentCheck => ui::assignment_check(),
         Command::ServiceUiCheck => ui::service_check(),
+        Command::SessionHost { journal } => {
+            #[cfg(windows)]
+            {
+                session_host::run(&journal)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = journal;
+                bail!("Session hosts require Windows 11.")
+            }
+        }
+        Command::SessionCheck => {
+            #[cfg(windows)]
+            {
+                session_host::check()
+            }
+            #[cfg(not(windows))]
+            {
+                bail!("Session checks require Windows 11.")
+            }
+        }
         Command::ComposeCheck => {
             #[cfg(windows)]
             {
@@ -118,6 +150,7 @@ fn run() -> Result<()> {
                  jurabox service-check --exercise   Verify owned command services with finite fixtures\n\n\
                  jurabox service-ui-check --exercise Verify service controls in a temporary workspace\n\n\
                  jurabox compose-check --exercise   Verify private Docker Compose containers\n\n\
+                 jurabox session-check --exercise   Verify background sessions and reconnection\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );

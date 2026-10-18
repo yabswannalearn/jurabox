@@ -38,7 +38,11 @@ Select other services/actions under **Wait for prerequisites**. Dependents wait 
 
 **Session services** shows status and recent output, retaining 64 KiB per command stream. **Start/Retry** uses the session setup and avoids duplicating a live workload, including child processes that survive their launcher. **Stop** runs the configured normal-stop command with a default 10-second deadline. A missing/failed stop command or timeout leaves the workload managed and running. **Force stop** explicitly terminates that workload and its owned children. Close and relaunch pause on stop failures; saving a different stop command does not change the current session's instructions.
 
-Choose **Stop services and quit** in File or the tray menu to shut down managed workloads, clean up owned stopped Compose containers, and exit. A shutdown or cleanup failure keeps Jurabox open. Ordinary Quit is guarded while workloads or retained Compose containers remain owned; a leave-running exit needs the later durable-output/reconnection work. Closing the window still hides it to the tray. Output is in memory and is not preserved after quitting. Settings versions 1–4 migrate to version 5 in memory and are rewritten only on Save. Existing readiness/dependency settings are preserved.
+Choose **Stop services and quit** in File or the tray menu to shut down managed workloads, clean up owned stopped Compose containers, and exit. A shutdown or cleanup failure keeps Jurabox open. **Quit and leave services running** closes the manager while a small Rust background process retains service ownership and recent output. Reopening Jurabox reconnects to the same sessions and their original setup. Closing the window still hides it to the tray.
+
+While the manager is closed, running commands continue and output tails remain bounded. Workspace/readiness scheduling and periodic Docker inspection pause, and queued starts require explicit Start after reopening. Already dispatched operations can finish. Recovery currently requires the background process to survive: a lost host, reboot, or logoff can leave an uncertain session record, which is preserved and blocks new launches. Cold recovery and an in-app resolution flow remain unfinished. Output does not survive loss of the host. Use Stop services and quit before replacing the executable during development or an update.
+
+The runtime journal sits beside the settings file as `projects.session-host.json`. It contains runtime credentials and session commands; keep it local and exclude it from configuration exports. A failed connection still lets you edit saved configuration and quit the manager. Settings versions 1–4 migrate to version 5 in memory and are rewritten only on Save. Existing readiness/dependency settings are preserved.
 
 To start with only a tray icon:
 
@@ -82,6 +86,7 @@ cargo run -- assignment-check --exercise
 cargo run -- service-check --exercise
 cargo run -- service-ui-check --exercise
 cargo run -- compose-check --exercise
+cargo run -- session-check --exercise
 ```
 
 Unit tests do not open windows or switch desktops. The live UI check uses temporary settings, exercises project/app/link forms and save/error/tray flows, and writes screenshots to `target/ui-check/`. The workspace exercise launches separate Jurabox test processes, verifies assignment, shared movement, session semantics, desktop deletion/recreation, and partial failure. It restores the original desktops and closes only its test windows. The live checks require an unlocked interactive Windows session.
@@ -94,6 +99,8 @@ The service exercises use private temporary settings/folders and finite diagnost
 
 The Compose exercise needs the local Linux Docker Desktop engine running. It uses `postgres:16-alpine` for finite shell fixtures, pulling the image if missing, and creates private project/workload names. It checks actual container ownership, same-container Stop/Start and Retry, source-file snapshot behavior, healthy/completed prerequisites, output, startup failure, unverified-container refusal, and non-escalating Stop/explicit Force stop. It cleans up only its private containers, networks, and volumes. The normal UI check also verifies Compose form persistence without starting Docker.
 
+The session exercise uses real separate background hosts and private journals. It checks leave-running, abrupt connection loss, original setup/output retention, duplicate avoidance, manual stops, cancellation of queued starts, clean exit, and refusal of a lost host identity. It also runs the real manager UI through the production pipe connection. The older UI exercises retain a direct in-process actor for isolated feature checks. Set `JURABOX_CHECK_DOCKER=1` for the session exercise to include same-container reconnection and Stop/Start after editing the original Compose source. This optional fixture requires the local `desktop-linux` context and `postgres:16-alpine`, allocates no Docker networks or volumes, and removes its private container on exit.
+
 ## Design documents
 
 - [Project plan](docs/PLAN.md)
@@ -105,4 +112,5 @@ The Compose exercise needs the local Linux Docker Desktop engine running. It use
 - [Owned foreground command workloads](docs/adr/0004-own-foreground-command-workloads.md)
 - [Startup readiness and dependencies](docs/adr/0005-coordinate-startup-readiness-and-dependencies.md)
 - [Owned Docker Compose containers](docs/adr/0006-manage-owned-compose-containers.md)
+- [Background sessions and reconnection](docs/adr/0007-retain-sessions-in-a-background-rust-process.md)
 - [Implementation progress and validation](docs/PROGRESS.md)

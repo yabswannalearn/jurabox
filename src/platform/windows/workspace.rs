@@ -23,7 +23,7 @@ pub fn check() -> Result<()> {
     check::run()
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Summary {
     pub open: Vec<Uuid>,
     pub active: Option<Uuid>,
@@ -48,9 +48,32 @@ struct Session {
 #[derive(Default)]
 pub struct Workspaces {
     sessions: HashMap<Uuid, Session>,
+    manager_process: Option<u32>,
 }
 
 impl Workspaces {
+    pub fn set_manager_process(&mut self, process: u32) {
+        self.manager_process = Some(process);
+    }
+    pub fn resume_monitoring(&self) {
+        for session in self.sessions.values() {
+            session.services.resume_monitoring();
+        }
+    }
+
+    pub fn pause_monitoring(&mut self) {
+        for session in self.sessions.values_mut() {
+            session.services.pause_monitoring();
+        }
+    }
+
+    pub fn setups(&self) -> Vec<Project> {
+        self.sessions
+            .values()
+            .map(|session| session.setup.clone())
+            .collect()
+    }
+
     pub fn summary(&self) -> Summary {
         let current = current_id().ok();
         Summary {
