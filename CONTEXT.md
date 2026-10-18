@@ -24,6 +24,10 @@ _Avoid_: Session setup when referring to changes saved for a future launch.
 The configuration used to begin a **Project session**, retained for that session even when the **Saved setup** changes.
 _Avoid_: Latest settings when referring to an already-running session.
 
+**Recovery record**:
+Private runtime evidence of a **Project session** and the workloads Jurabox originally started. It is separate from the editable **Saved setup** and does not turn an unknown process into a **Managed service**.
+_Avoid_: Saved project when referring to runtime ownership evidence.
+
 **Selected project**:
 The **Project** currently displayed for configuration in the Jurabox window. It may differ from the **Active project**.
 _Avoid_: Active project when referring only to the configuration selection.

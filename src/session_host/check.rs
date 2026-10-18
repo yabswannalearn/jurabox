@@ -252,6 +252,7 @@ pub fn run() -> Result<()> {
     );
     // A stale PID or damaged record must never cause process-name/PID adoption.
     let mut stale = host;
+    stale.version = 1; // Legacy records have no recoverable command capability.
     stale.identity.created ^= 1;
     stale.projects.push(project);
     stale.save(&path)?;

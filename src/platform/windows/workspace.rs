@@ -18,6 +18,7 @@ use winvd::Desktop;
 
 mod assignment;
 mod check;
+mod recovery;
 pub use assignment::{SessionApp, WindowChoices, WindowOption};
 pub fn check() -> Result<()> {
     check::run()
@@ -33,12 +34,15 @@ pub struct Summary {
     pub workloads: Vec<(Uuid, services::View)>,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Entry {
     config: AppConfig,
     window: Option<AppWindow>,
 }
 
 struct Session {
+    generation: Uuid,
     setup: Project,
     desktop: Option<GUID>,
     entries: Vec<Entry>,
@@ -49,6 +53,7 @@ struct Session {
 pub struct Workspaces {
     sessions: HashMap<Uuid, Session>,
     manager_process: Option<u32>,
+    recovery_root: Option<std::path::PathBuf>,
 }
 
 impl Workspaces {
@@ -179,6 +184,7 @@ impl Workspaces {
             .sessions
             .remove(&project.id)
             .unwrap_or_else(|| Session {
+                generation: Uuid::nil(),
                 setup: project.clone(),
                 desktop: None,
                 entries: Vec::new(),
@@ -205,7 +211,19 @@ impl Workspaces {
     ) -> Result<String> {
         let mut problems = Vec::new();
         if launch {
-            session.services = Services::new(project)?;
+            let generation = Uuid::new_v4();
+            let services = if let Some(root) = &self.recovery_root {
+                let services =
+                    Services::recorded(project, &root.join(generation.to_string()), false)?;
+                // Commit the complete original setup and initialized service records
+                // before startup scheduling can create even the first command.
+                recovery::save(root, project, generation, session.desktop, &[])?;
+                services
+            } else {
+                Services::new(project)?
+            };
+            session.generation = generation;
+            session.services = services;
             problems.extend(session.services.start_all());
         }
         let desktop = match desktop_for(session.desktop, &project.name)

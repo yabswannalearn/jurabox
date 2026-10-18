@@ -10,13 +10,21 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{
-            BOOL, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation, WAIT_OBJECT_0,
+            BOOL, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError, HANDLE,
+            HANDLE_FLAG_INHERIT, HANDLE_FLAGS, HLOCAL, LocalFree, SetHandleInformation,
+            WAIT_OBJECT_0,
         },
-        Security::SECURITY_ATTRIBUTES,
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        },
         System::{
             JobObjects::{
                 CreateJobObjectW, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-                JobObjectBasicAccountingInformation, QueryInformationJobObject, TerminateJobObject,
+                JobObjectBasicAccountingInformation, OpenJobObjectW, QueryInformationJobObject,
+                TerminateJobObject,
             },
             Pipes::CreatePipe,
             Threading::{
@@ -57,7 +65,7 @@ fn handle(value: &OwnedHandle) -> HANDLE {
     HANDLE(value.as_raw_handle())
 }
 
-/// Creation-returned handles are owned exactly once. Never reopen by PID/name.
+/// Each returned kernel handle has exactly one Rust owner.
 unsafe fn own(value: HANDLE) -> OwnedHandle {
     unsafe { OwnedHandle::from_raw_handle(value.0) }
 }
@@ -117,7 +125,7 @@ impl Drop for Attributes {
 
 pub struct ManagedProcess {
     job: OwnedHandle,
-    process: OwnedHandle,
+    process: Option<OwnedHandle>,
     pub id: u32,
     output: Arc<Mutex<Output>>,
 }
@@ -132,6 +140,33 @@ impl ManagedProcess {
         arguments: &str,
         folder: &Path,
         environment: Option<&[u16]>,
+    ) -> Result<Self> {
+        Self::launch(executable, arguments, folder, environment, None)
+    }
+
+    /// The caller must flush this random capability to its recovery record first.
+    pub fn start_recorded(
+        executable: &Path,
+        arguments: &str,
+        folder: &Path,
+        claim: uuid::Uuid,
+        completion: &Path,
+    ) -> Result<Self> {
+        Self::launch(
+            executable,
+            arguments,
+            folder,
+            None,
+            Some((claim, completion)),
+        )
+    }
+
+    fn launch(
+        executable: &Path,
+        arguments: &str,
+        folder: &Path,
+        environment: Option<&[u16]>,
+        claim: Option<(uuid::Uuid, &Path)>,
     ) -> Result<Self> {
         ensure!(
             executable.is_file(),
@@ -181,7 +216,16 @@ impl ManagedProcess {
         // assignment happens during creation, before user code can spawn children.
         // Only the two explicitly listed pipe handles can be inherited.
         unsafe {
-            let job = own(CreateJobObjectW(None, PCWSTR::null())?);
+            let job = if let Some((claim, _)) = claim {
+                create_recorded_job(claim)?
+            } else {
+                own(CreateJobObjectW(None, PCWSTR::null())?)
+            };
+            // Pin the job's name before any workload exists. Arm monitoring only
+            // after this creation attempt finishes; EOF also handles owner death.
+            let _registration = claim
+                .map(|(claim, path)| crate::command_keeper::register(claim, path))
+                .transpose()?;
             let inherited = [handle(&input), handle(&write)];
             let jobs = [handle(&job)];
             let attributes = Attributes::new()?;
@@ -226,7 +270,7 @@ impl ManagedProcess {
             drop(own(process.hThread));
             Ok(Self {
                 job,
-                process: root,
+                process: Some(root),
                 id: process.dwProcessId,
                 output,
             })
@@ -234,30 +278,57 @@ impl ManagedProcess {
     }
 
     pub fn active(&self) -> Result<bool> {
-        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-        // SAFETY: Query only this creation-owned job, with a correctly sized buffer.
-        unsafe {
-            QueryInformationJobObject(
-                handle(&self.job),
-                JobObjectBasicAccountingInformation,
-                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-                std::mem::size_of_val(&info) as u32,
-                None,
-            )?;
-        }
-        Ok(info.ActiveProcesses != 0)
+        job_active(&self.job)
     }
 
     pub fn exit_code(&self) -> Result<Option<u32>> {
+        let Some(process) = &self.process else {
+            return Ok(None);
+        };
         // SAFETY: A retained process handle identifies the original incarnation.
         unsafe {
-            if WaitForSingleObject(handle(&self.process), 0) != WAIT_OBJECT_0 {
+            if WaitForSingleObject(handle(process), 0) != WAIT_OBJECT_0 {
                 return Ok(None);
             }
             let mut code = 0;
-            GetExitCodeProcess(handle(&self.process), &mut code)?;
+            GetExitCodeProcess(handle(process), &mut code)?;
             Ok(Some(code))
         }
+    }
+
+    pub fn recovered(&self) -> bool {
+        self.process.is_none()
+    }
+
+    /// Reopen only the capability saved before creation, never a PID or executable.
+    pub fn recover(claim: uuid::Uuid, completion: &Path) -> Result<Option<Self>> {
+        ensure!(!claim.is_nil(), "Invalid command ownership capability.");
+        let finished = crate::command_keeper::read_seal(completion, claim)?;
+        let Some(job) = open_recorded_job(claim, 0x0004 | 0x0008)? else {
+            ensure!(
+                finished,
+                "The original command job and its keeper are unavailable without a completion seal. Ownership is uncertain; replacement is blocked."
+            );
+            return Ok(None);
+        };
+        let process = Self {
+            job,
+            process: None,
+            id: 0,
+            output: Arc::new(Mutex::new(Output {
+                finished: true,
+                ..Default::default()
+            })),
+        };
+        let active = process.active()?;
+        ensure!(
+            !active || !finished,
+            "The command completion record conflicts with a live job; replacement is blocked."
+        );
+        if !active {
+            crate::command_keeper::finish(completion, claim)?;
+        }
+        Ok(active.then_some(process))
     }
 
     pub fn output_pending(&self) -> bool {
@@ -278,7 +349,7 @@ impl ManagedProcess {
     /// Force an owned command job. Workload termination requires explicit Force
     /// stop; internal read-only Docker log clients can also be cancelled on cleanup.
     pub fn force_stop(&self) -> Result<()> {
-        // SAFETY: This handle can refer only to the job created for this workload.
+        // SAFETY: Creation or the recorded private capability identifies this job.
         unsafe {
             TerminateJobObject(handle(&self.job), 1)?;
         }
@@ -286,9 +357,98 @@ impl ManagedProcess {
     }
 }
 
+fn job_name(claim: uuid::Uuid) -> HSTRING {
+    HSTRING::from(format!(r"Global\Jurabox.Command.{claim}"))
+}
+
+pub(crate) fn open_recorded_job(claim: uuid::Uuid, access: u32) -> Result<Option<OwnedHandle>> {
+    ensure!(!claim.is_nil(), "Invalid command ownership capability.");
+    // SAFETY: Only original private capabilities are used. The keeper requests
+    // query rights; service control additionally requests terminate rights.
+    match unsafe { OpenJobObjectW(access, false, &job_name(claim)) } {
+        Ok(job) => Ok(Some(unsafe { own(job) })),
+        Err(error) if error.code() == ERROR_FILE_NOT_FOUND.to_hresult() => Ok(None),
+        Err(error) => {
+            Err(error).context("Cannot verify the original command job; replacement is blocked.")
+        }
+    }
+}
+
+pub(crate) fn job_active(job: &OwnedHandle) -> Result<bool> {
+    let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    // SAFETY: A live original job handle and a correctly sized accounting buffer.
+    unsafe {
+        QueryInformationJobObject(
+            handle(job),
+            JobObjectBasicAccountingInformation,
+            (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+            std::mem::size_of_val(&info) as u32,
+            None,
+        )?;
+    }
+    Ok(info.ActiveProcesses != 0)
+}
+
+fn create_recorded_job(claim: uuid::Uuid) -> Result<OwnedHandle> {
+    ensure!(!claim.is_nil(), "Invalid command ownership capability.");
+    // SAFETY: Windows copies the owner/SYSTEM-only descriptor. It is freed on
+    // both success and failure. A pre-existing object is never adopted on launch.
+    unsafe {
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            &HSTRING::from("D:P(A;;GA;;;SY)(A;;GA;;;OW)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )?;
+        let security = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: false.into(),
+        };
+        let result = CreateJobObjectW(Some(&security), &job_name(claim));
+        let error = GetLastError();
+        let _ = LocalFree(HLOCAL(descriptor.0));
+        let job = own(result?);
+        ensure!(
+            error != ERROR_ALREADY_EXISTS,
+            "This command job already exists; no duplicate was started."
+        );
+        Ok(job)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_recorded_job_cannot_be_adopted_by_a_new_launch() {
+        let claim = uuid::Uuid::new_v4();
+        let _original = create_recorded_job(claim).unwrap();
+        assert!(create_recorded_job(claim).is_err());
+        assert!(
+            open_recorded_job(uuid::Uuid::new_v4(), 0x0004)
+                .unwrap()
+                .is_none()
+        );
+        assert!(open_recorded_job(uuid::Uuid::nil(), 0x0004).is_err());
+    }
+
+    #[test]
+    fn missing_job_without_completion_evidence_blocks_replacement() {
+        let folder = tempfile::tempdir().unwrap();
+        let claim = uuid::Uuid::new_v4();
+        let path = folder.path().join("claim.json");
+        crate::recovery::Record::new(path.clone())
+            .save(&serde_json::json!({
+                "version": 1, "claim": claim, "finished": false
+            }))
+            .unwrap();
+        assert!(ManagedProcess::recover(claim, &path).is_err());
+        crate::command_keeper::finish(&path, claim).unwrap();
+        assert!(ManagedProcess::recover(claim, &path).unwrap().is_none());
+    }
 
     #[test]
     fn output_tail_stays_bounded_across_large_chunks_without_newlines() {

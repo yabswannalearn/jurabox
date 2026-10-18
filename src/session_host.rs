@@ -1,9 +1,11 @@
 //! A single same-binary helper retains original ownership handles across UI exits.
-//! It never reconstructs ownership from a process name, PID, port, or Docker label.
+//! Crash recovery uses write-ahead command capabilities, never PID/name adoption.
 mod check;
 mod identity;
 mod pipe;
+mod recovery_check;
 pub use check::run as check;
+pub use recovery_check::run as recovery_check;
 
 use crate::{
     platform::workspace::{Summary, WindowChoices, WindowOption, Workspaces},
@@ -74,15 +76,20 @@ impl Journal {
             "Cannot read the session journal. It has been preserved; new launches are blocked.",
         )?;
         ensure!(
-            journal.version == 1,
+            matches!(journal.version, 1 | 2),
             "Unsupported session journal version; it has been preserved."
         );
         Ok(Some(journal))
     }
     fn save(&self, path: &Path) -> Result<()> {
+        let bytes = serde_json::to_vec(self)?;
+        ensure!(
+            bytes.len() < 4 * 1024 * 1024,
+            "Session journal exceeds 4 MiB; launch blocked."
+        );
         let mut temporary =
             tempfile::NamedTempFile::new_in(path.parent().context("Missing session folder")?)?;
-        serde_json::to_writer(&mut temporary, self)?;
+        temporary.write_all(&bytes)?;
         temporary.write_all(b"\n")?;
         temporary.as_file().sync_all()?;
         temporary.persist(path).map_err(|error| error.error)?;
@@ -100,6 +107,25 @@ impl Journal {
         );
         Ok(())
     }
+
+    fn allow_recovery(&self) -> Result<()> {
+        ensure!(
+            self.version == 2,
+            "The lost session uses an older record without command ownership capabilities. Its record has been preserved; new launches are blocked."
+        );
+        ensure!(
+            self.identity.executable == identity::inspect(std::process::id())?.executable,
+            "The saved session belongs to another Jurabox installation; its record has been preserved."
+        );
+        ensure!(
+            !self.projects.iter().any(|project| project
+                .workloads
+                .iter()
+                .any(|workload| workload.kind == crate::projects::WorkloadKind::DockerCompose)),
+            "The lost session includes Docker containers. Docker crash recovery is not available yet; its record has been preserved and new launches are blocked."
+        );
+        Ok(())
+    }
 }
 
 pub struct Client {
@@ -113,7 +139,7 @@ impl Client {
             path.is_absolute(),
             "The session journal must have an absolute path."
         );
-        let mut spawned = false;
+        let mut launched: Option<std::process::Child> = None;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let mut may_spawn = true;
@@ -126,22 +152,35 @@ impl Client {
                         }
                         // A live owner may be completing a request or detaching. Never replace it.
                     }
-                    Err(error) if !journal.projects.is_empty() => return Err(error),
+                    Err(_) if !journal.projects.is_empty() => journal.allow_recovery()?,
                     Err(_) => {}
                 }
             }
-            if !spawned && may_spawn {
+            if let Some(child) = &mut launched
+                && child.try_wait()?.is_some()
+            {
+                let mut bytes = Vec::new();
+                if let Some(error) = child.stderr.take() {
+                    error.take(8192).read_to_end(&mut bytes)?;
+                }
+                bail!(
+                    "The background session could not start. {}",
+                    String::from_utf8_lossy(&bytes).trim()
+                );
+            }
+            if launched.is_none() && may_spawn {
                 fs::create_dir_all(path.parent().context("Missing session folder")?)?;
-                Command::new(std::env::current_exe()?)
-                    .arg("_session-host")
-                    .arg(path)
-                    .creation_flags(0x08000000)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .context("Cannot start the background session process.")?;
-                spawned = true;
+                launched = Some(
+                    Command::new(std::env::current_exe()?)
+                        .arg("_session-host")
+                        .arg(path)
+                        .creation_flags(0x08000000)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .context("Cannot start the background session process.")?,
+                );
             }
             ensure!(
                 Instant::now() < deadline,
@@ -236,18 +275,24 @@ pub fn run(path: &Path) -> Result<()> {
         .share_mode(0)
         .open(path.with_extension("lock"))
         .context("Another session host owns these settings.")?;
-    if let Some(previous) = Journal::read(path)? {
-        ensure!(
-            previous.projects.is_empty(),
-            "The previous session host was lost with open sessions. Preserve its record and resolve remaining services before starting another host."
-        );
-    }
+    let root = path.with_extension("sessions");
+    let previous = Journal::read(path)?;
+    let recovering = previous
+        .as_ref()
+        .is_some_and(|journal| !journal.projects.is_empty());
+    let mut workspaces =
+        if let Some(previous) = previous.filter(|journal| !journal.projects.is_empty()) {
+            previous.allow_recovery()?;
+            Workspaces::recover(root, &previous.projects)?
+        } else {
+            Workspaces::recorded(root)
+        };
     let mut journal = Journal {
-        version: 1,
+        version: 2,
         identity: identity::inspect(std::process::id())?,
         generation: Uuid::new_v4(),
         token: Uuid::new_v4(),
-        projects: Vec::new(),
+        projects: workspaces.setups(),
     };
     let pipe = pipe::create(&journal.pipe_name())?;
     journal.save(path)?;
@@ -257,8 +302,12 @@ pub fn run(path: &Path) -> Result<()> {
     thread::spawn(move || {
         let _ = serve(pipe, pipe_journal, sender);
     });
-    let mut workspaces = Workspaces::default();
     let mut summary = Summary::default();
+    let mut recovery_notice = recovering.then(|| if journal.projects.is_empty() {
+        "The previous sessions have ended. Choose a project to open; nothing was started automatically.".to_string()
+    } else {
+        "Recovered the original command sessions. Missing services stay stopped. Use Start or Retry when ready; previous output is unavailable.".to_string()
+    });
     let mut choices: Option<(Uuid, WindowChoices)> = None;
     let mut attached = false;
     let mut next_poll = Instant::now();
@@ -287,11 +336,20 @@ pub fn run(path: &Path) -> Result<()> {
                 workspaces.poll_services();
                 next_poll = Instant::now() + Duration::from_millis(500);
                 summary = workspaces.desktop_changed();
+                if let Some(message) = recovery_notice.take() {
+                    summary.message = message;
+                }
             }
             Event::Disconnected => {
                 attached = false;
                 choices = None;
                 workspaces.pause_monitoring();
+                if let Err(error) = workspaces.checkpoint() {
+                    summary.message = format!(
+                        "Cannot save recovery state: {error:#}. Reopen Jurabox to resolve it."
+                    );
+                    summary.error = true;
+                }
                 if journal.projects.is_empty() {
                     return Ok(());
                 }
@@ -400,7 +458,7 @@ pub fn run(path: &Path) -> Result<()> {
                 };
                 if save {
                     journal.projects = setups;
-                    if let Err(error) = journal.save(path) {
+                    if let Err(error) = workspaces.checkpoint().and_then(|()| journal.save(path)) {
                         summary.message = format!(
                             "Cannot save the session record: {error:#}. Keep Jurabox open."
                         );

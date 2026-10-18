@@ -20,7 +20,7 @@ Use **Find installed app** to search Windows App Paths and common tools, or **Cu
 
 The browser option opens configured HTTP(S) links in a new Chrome or Edge window using the existing profile. **Shared app** explicitly permits reuse of one matching existing window and moves it with the active project. Multiple matching windows are reported as ambiguous. Otherwise, only a unique new window matching the executable is assigned. If an app delegates to another executable, takes longer than five seconds, or reuses a previous window, it may launch without assignment: check it before explicitly relaunching. Packaged apps, terminal hosts, and application-specific adapters still need pilot validation.
 
-Live sessions currently last only while Jurabox runs. Reopening Jurabox restores saved settings, but does not reconnect to surviving app windows or workloads yet. Command services, startup actions, local Docker Compose, startup readiness, and dependencies are available in this development slice. Live inactivity timers and recovery remain later work. The saved inactivity setting does not yet stop processes.
+Reopening Jurabox reconnects to its background session process, which keeps the original apps, services, and recent output. If that process also crashes, command-only sessions can recover their original command jobs, verified window assignments, and desktops from private records and a small command keeper. Verified stopped services stay stopped until you choose Start/Retry. Once commands are verified stopped and their windows/desktops are gone, projects stay closed until you choose Open. Docker crash recovery, sudden reboot recovery, and live inactivity timers remain later work. The saved inactivity setting does not yet stop processes.
 
 For an open project, **Workspace windows** shows the apps from its session setup. Use **Assign open window** or **Change window** to search accessible windows by title or executable path, then choose **Use window**. This also supports apps whose launcher and visible window belong to different executables. Assignment takes effect immediately and leaves launch settings unchanged. **Unassign** leaves the app open. Windows privately assigned to another entry are unavailable; enable Shared app in both saved setups and relaunch to link one window across sessions.
 
@@ -40,7 +40,7 @@ Select other services/actions under **Wait for prerequisites**. Dependents wait 
 
 Choose **Stop services and quit** in File or the tray menu to shut down managed workloads, clean up owned stopped Compose containers, and exit. A shutdown or cleanup failure keeps Jurabox open. **Quit and leave services running** closes the manager while a small Rust background process retains service ownership and recent output. Reopening Jurabox reconnects to the same sessions and their original setup. Closing the window still hides it to the tray.
 
-While the manager is closed, running commands continue and output tails remain bounded. Workspace/readiness scheduling and periodic Docker inspection pause, and queued starts require explicit Start after reopening. Already dispatched operations can finish. Recovery currently requires the background process to survive: a lost host, reboot, or logoff can leave an uncertain session record, which is preserved and blocks new launches. Cold recovery and an in-app resolution flow remain unfinished. Output does not survive loss of the host. Use Stop services and quit before replacing the executable during development or an update.
+While the manager is closed, running commands continue and output tails remain bounded. Workspace/readiness scheduling and periodic Docker inspection pause, and queued starts require explicit Start after reopening. Already dispatched operations can finish. Command-only sessions can recover after host failure; lost Docker/mixed sessions and legacy records still block replacement launches. An in-app resolution flow for uncertain records remains unfinished. Output does not survive loss of the host. Use Stop services and quit before replacing the executable during development or an update.
 
 The runtime journal sits beside the settings file as `projects.session-host.json`. It contains runtime credentials and session commands; keep it local and exclude it from configuration exports. A failed connection still lets you edit saved configuration and quit the manager. Settings versions 1–4 migrate to version 5 in memory and are rewritten only on Save. Existing readiness/dependency settings are preserved.
 
@@ -87,6 +87,7 @@ cargo run -- service-check --exercise
 cargo run -- service-ui-check --exercise
 cargo run -- compose-check --exercise
 cargo run -- session-check --exercise
+cargo run -- recovery-check --exercise
 ```
 
 Unit tests do not open windows or switch desktops. The live UI check uses temporary settings, exercises project/app/link forms and save/error/tray flows, and writes screenshots to `target/ui-check/`. The workspace exercise launches separate Jurabox test processes, verifies assignment, shared movement, session semantics, desktop deletion/recreation, and partial failure. It restores the original desktops and closes only its test windows. The live checks require an unlocked interactive Windows session.
@@ -101,6 +102,10 @@ The Compose exercise needs the local Linux Docker Desktop engine running. It use
 
 The session exercise uses real separate background hosts and private journals. It checks leave-running, abrupt connection loss, original setup/output retention, duplicate avoidance, manual stops, cancellation of queued starts, clean exit, and refusal of a lost host identity. It also runs the real manager UI through the production pipe connection. The older UI exercises retain a direct in-process actor for isolated feature checks. Set `JURABOX_CHECK_DOCKER=1` for the session exercise to include same-container reconnection and Stop/Start after editing the original Compose source. This optional fixture requires the local `desktop-linux` context and `postgres:16-alpine`, allocates no Docker networks or volumes, and removes its private container on exit.
 
+The recovery exercise deliberately ends only its own private background host using its creation handle. It checks surviving command children, original shutdown settings, manual stops, completed actions, missing commands, readiness Retry, scoped Force stop, and absence of duplicate launches. It also models the loss of all session resources without rebooting Windows. This does not replace a real logoff/reboot test.
+
+Crash recovery records live beside the host journal in `projects.session-host.sessions/`. They contain original commands, window/job capabilities, and completion seals; keep them private and out of configuration exports. One query-only helper per launching host keeps command jobs discoverable until they finish, even if the session host crashes. It never stops workloads. Command output capture cannot reconnect after the host dies: that recovered instance's output is unavailable until it is stopped and explicitly started again. Missing jobs without completion evidence, damaged/future records, legacy open-session records, and lost Docker-session records are preserved and block replacement launches. This also protects against a lost keeper or sudden reboot with unfinished records. Old runtime records are retained conservatively; automatic cleanup and an in-app resolution flow remain planned.
+
 ## Design documents
 
 - [Project plan](docs/PLAN.md)
@@ -113,4 +118,5 @@ The session exercise uses real separate background hosts and private journals. I
 - [Startup readiness and dependencies](docs/adr/0005-coordinate-startup-readiness-and-dependencies.md)
 - [Owned Docker Compose containers](docs/adr/0006-manage-owned-compose-containers.md)
 - [Background sessions and reconnection](docs/adr/0007-retain-sessions-in-a-background-rust-process.md)
+- [Command recovery after host failure](docs/adr/0008-recover-original-command-jobs.md)
 - [Implementation progress and validation](docs/PROGRESS.md)
