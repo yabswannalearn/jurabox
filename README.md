@@ -22,6 +22,8 @@ The browser option opens configured HTTP(S) links in a new Chrome or Edge window
 
 Live sessions currently last only while Jurabox runs. Reopening Jurabox restores saved settings, but does not reconnect to surviving app windows or desktops yet. Service management, live inactivity timers, and session recovery remain later phases; the saved inactivity setting does not yet stop processes.
 
+For an open project, **Workspace windows** shows the apps from its session setup. Use **Assign open window** or **Change window** to search accessible windows by title or executable path, then choose **Use window**. This also supports apps whose launcher and visible window belong to different executables. Assignment takes effect immediately and leaves launch settings unchanged. **Unassign** leaves the app open. Windows privately assigned to another entry are unavailable; enable Shared app in both saved setups and relaunch to link one window across sessions.
+
 To start with only a tray icon:
 
 ```powershell
@@ -60,11 +62,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo run -- ui-check
 cargo run -- workspace-check --exercise
+cargo run -- assignment-check --exercise
 ```
 
 Unit tests do not open windows or switch desktops. The live UI check uses temporary settings, exercises project/app/link forms and save/error/tray flows, and writes screenshots to `target/ui-check/`. The workspace exercise launches separate Jurabox test processes, verifies assignment, shared movement, session semantics, desktop deletion/recreation, and partial failure. It restores the original desktops and closes only its test windows. The live checks require an unlocked interactive Windows session.
 
 To include an installed Chrome/Edge browser in the workspace exercise, set `JURABOX_CHECK_BROWSER` to its full executable path for that command. The check serves two temporary loopback HTTP pages, verifies the new browser window and reuse, and closes that window during cleanup. It uses the existing browser profile. This optional check passed with Edge 155.0.4283.45 on the development host.
+
+The assignment exercise opens a temporary project and private test-app copy, checks the real picker callbacks, search keyboard focus, assignment/relaunch/unassign, cancellation during discovery, and closed-window refresh. It restores the original desktops and closes its own fixture. The workspace exercise also checks assignment and private/shared conflict rules. Set `JURABOX_CHECK_CONSOLE=1` to include a real CMD/terminal-host window; that fixture command exits by itself after 20 seconds and only a newly created, uniquely titled window can be selected by the exercise.
 
 ## Design documents
 

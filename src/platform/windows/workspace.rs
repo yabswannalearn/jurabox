@@ -15,7 +15,9 @@ use uuid::Uuid;
 use windows::core::GUID;
 use winvd::Desktop;
 
+mod assignment;
 mod check;
+pub use assignment::{SessionApp, WindowChoices, WindowOption};
 pub fn check() -> Result<()> {
     check::run()
 }
@@ -26,6 +28,7 @@ pub struct Summary {
     pub active: Option<Uuid>,
     pub message: String,
     pub error: bool,
+    pub apps: Vec<SessionApp>,
 }
 
 struct Entry {
@@ -54,6 +57,23 @@ impl Workspaces {
                     .iter()
                     .find_map(|(id, session)| (session.desktop == Some(current)).then_some(*id))
             }),
+            apps: self
+                .sessions
+                .iter()
+                .flat_map(|(project, session)| {
+                    session.entries.iter().map(|entry| {
+                        let window = entry.window.as_ref().filter(|window| window.is_alive());
+                        SessionApp {
+                            project: *project,
+                            app: entry.config.id,
+                            name: entry.config.name.clone(),
+                            title: window.map(AppWindow::title),
+                            executable: window.map(|window| window.executable.clone()),
+                            shared: entry.config.shared,
+                        }
+                    })
+                })
+                .collect(),
             ..Default::default()
         }
     }
@@ -110,7 +130,7 @@ impl Workspaces {
                         && session.setup.folder == project.folder
                         && entry.window.as_ref().is_some_and(AppWindow::is_alive)
                 });
-                let window = if let Some(previous) = previous {
+                let mut window = if let Some(previous) = previous {
                     previous.window.clone()
                 } else {
                     match launch_app(&config, project) {
@@ -126,6 +146,18 @@ impl Workspaces {
                         }
                     }
                 };
+                if let Some(candidate) = &window
+                    && let Err(error) = assignment::check_automatic_sharing(
+                        candidate,
+                        config.shared,
+                        self,
+                        &next,
+                        &project.name,
+                    )
+                {
+                    problems.push(format!("{}: {error:#}", config.name));
+                    window = None;
+                }
                 next.push(Entry { config, window });
             }
             session.entries = next;
@@ -257,7 +289,7 @@ fn launch_app(config: &AppConfig, project: &Project) -> Result<Option<AppWindow>
             return Ok(Some(window));
         }
     }
-    let before = app_windows::all()?;
+    let before = app_windows::handles()?;
     let mut command = Command::new(&config.executable);
     if config.id.is_nil() {
         let browser = project.browser.as_ref().context("Missing browser setup.")?;
@@ -309,7 +341,7 @@ fn launch_app(config: &AppConfig, project: &Project) -> Result<Option<AppWindow>
         let windows = app_windows::all()?;
         let matching: Vec<_> = windows
             .into_iter()
-            .filter(|window| window.executable == key && !before.contains(window))
+            .filter(|window| window.executable == key && !before.contains(&window.handle))
             .collect();
         if matching.len() == 1 {
             let window = matching.into_iter().next().unwrap();

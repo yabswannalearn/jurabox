@@ -3,7 +3,7 @@ use anyhow::{bail, ensure};
 use slint::Model;
 use std::{cell::RefCell, fs::File, io::BufWriter, path::Path, rc::Rc, time::Duration};
 
-fn snapshot(window: &AppWindow, path: &Path) -> Result<()> {
+pub(super) fn snapshot(window: &AppWindow, path: &Path) -> Result<()> {
     let pixels = window.window().take_snapshot()?;
     let mut encoder = png::Encoder::new(
         BufWriter::new(File::create(path)?),

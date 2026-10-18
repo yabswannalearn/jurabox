@@ -3,6 +3,8 @@ import { AboutSlint, Button, CheckBox, LineEdit, ScrollView, SpinBox, TextEdit }
 export struct ProjectRow { name: string, folder: string }
 export struct AppDraft { id: string, name: string, executable: string, arguments: string, new-console: bool, shared: bool }
 export struct InstalledRow { name: string, executable: string }
+export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool }
+export struct WindowOptionRow { id: string, title: string, executable: string, assignment: string, available: bool }
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/jurabox.svg");
@@ -34,8 +36,17 @@ export component AppWindow inherits Window {
     in property <int> selected-index: -1;
     in property <bool> editing-existing;
     in property <bool> busy;
+    private property <bool> form-enabled: !root.busy && !root.window-picker-visible;
     in property <bool> workspace-busy;
     in property <bool> session-open;
+    in property <[SessionAppRow]> session-apps;
+    in property <[WindowOptionRow]> window-options;
+    in-out property <bool> window-picker-visible;
+    in property <bool> window-picker-loading;
+    in property <bool> window-picker-assigning;
+    in property <string> window-picker-name;
+    in property <string> window-picker-error;
+    in-out property <string> window-search;
     in property <string> active-workspace: "No project active";
     in-out property <[AppDraft]> apps;
     in property <[InstalledRow]> installed-apps;
@@ -71,20 +82,28 @@ export component AppWindow inherits Window {
     callback open-project();
     callback relaunch-project();
     callback close-project();
+    callback show-window-picker(string);
+    callback refresh-window-picker();
+    callback filter-windows();
+    callback assign-window(string);
+    callback unassign-window(string);
+    callback cancel-window-picker();
+    callback focus-window-search();
+    focus-window-search => { window-search-edit.focus(); }
     focus-name => { name-edit.focus(); }
 
     MenuBar {
         Menu {
             title: "File";
-            MenuItem { title: "New project"; shortcut: @keys(Control + N); activated => { root.new-project(); } }
-            MenuItem { title: "Save project"; shortcut: @keys(Control + S); enabled: !root.busy; activated => { root.save-project(); } }
+            MenuItem { title: "New project"; shortcut: @keys(Control + N); enabled: root.form-enabled; activated => { root.new-project(); } }
+            MenuItem { title: "Save project"; shortcut: @keys(Control + S); enabled: root.form-enabled && !root.window-picker-visible; activated => { root.save-project(); } }
             MenuSeparator {}
             MenuItem { title: "Hide to tray"; activated => { root.hide-window(); } }
             MenuItem { title: "Quit Jurabox"; activated => { root.quit(); } }
         }
         Menu {
             title: "Help";
-            MenuItem { title: "About Jurabox"; activated => { root.about-visible = true; } }
+            MenuItem { title: "About Jurabox"; enabled: !root.window-picker-visible; activated => { root.about-visible = true; } }
         }
     }
 
@@ -105,7 +124,7 @@ export component AppWindow inherits Window {
                 }
                 Text { text: "PROJECTS"; font-size: 11px; font-weight: 600; color: #65778d; }
                 Text { text: root.active-workspace; color: #087f8c; font-size: 12px; wrap: word-wrap; }
-                Button { text: "+  New project"; enabled: !root.busy; clicked => { root.new-project(); } }
+                Button { text: "+  New project"; enabled: root.form-enabled; clicked => { root.new-project(); } }
                 ScrollView {
                     vertical-stretch: 1;
                     HorizontalLayout {
@@ -120,8 +139,9 @@ export component AppWindow inherits Window {
                                     Rectangle { width: 3px; background: index == root.selected-index ? #087f8c : transparent; border-radius: 1px; }
                                     Button {
                                         text: project.name;
+                                        width: 200px;
                                         min-height: 40px;
-                                        enabled: !root.busy;
+                                        enabled: root.form-enabled;
                                         clicked => { root.select-project(index); }
                                         Tooltip { text: @markdown("\{project.folder}"); }
                                     }
@@ -146,12 +166,12 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     spacing: 8px;
                     vertical-stretch: 0;
-                    Button { text: root.workspace-busy ? "Working…" : (root.session-open ? "Switch to project" : "Open project"); primary: true; enabled: root.editing-existing && !root.busy && !root.workspace-busy && !root.dirty; clicked => { root.open-project(); } }
-                    if root.session-open: Button { text: "Relaunch saved setup"; enabled: !root.busy && !root.workspace-busy && !root.dirty; clicked => { root.relaunch-project(); } }
-                    if root.session-open: Button { text: "Close session"; enabled: !root.busy && !root.workspace-busy && !root.dirty; clicked => { root.close-project(); } }
+                    Button { text: root.workspace-busy ? "Working…" : (root.session-open ? "Switch to project" : "Open project"); primary: true; enabled: root.editing-existing && root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.open-project(); } }
+                    if root.session-open: Button { text: "Relaunch saved setup"; enabled: root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.relaunch-project(); } }
+                    if root.session-open: Button { text: "Close session"; enabled: root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.close-project(); } }
                 }
                 Text { text: "\{root.projects.length} saved on this PC"; font-size: 12px; color: #65778d; }
-                Button { text: "Hide to tray"; clicked => { root.hide-window(); } }
+                Button { text: "Hide to tray"; enabled: root.form-enabled; clicked => { root.hide-window(); } }
             }
         }
         Rectangle {
@@ -178,12 +198,36 @@ export component AppWindow inherits Window {
                         spacing: 12px;
                         padding-right: 8px;
                         alignment: start;
+                        if root.session-open: VerticalLayout {
+                            spacing: 10px;
+                            Text { text: "Workspace windows"; font-size: 17px; font-weight: 600; color: #22313d; }
+                            Text { text: "Windows for this session. Assignment changes take effect now; saved launch settings apply on relaunch."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                            for app in root.session-apps: Rectangle {
+                                background: #f3f6f8;
+                                border-radius: 6px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 8px;
+                                    Text { text: app.name + (app.shared ? " · Shared" : ""); color: #22313d; font-weight: 600; overflow: elide; }
+                                    Text { text: app.assigned ? app.title : "No assigned window. Check whether the app is open, then assign its window."; color: app.assigned ? #087f8c : #65778d; font-size: 12px; wrap: word-wrap; }
+                                    if app.assigned: Text { text: app.executable; font-size: 11px; color: #65778d; overflow: elide; }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 8px;
+                                        Button { text: app.assigned ? "Change window…" : "Assign open window…"; enabled: root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.show-window-picker(app.id); } }
+                                        if app.assigned: Button { text: "Unassign"; enabled: root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.unassign-window(app.id); } }
+                                    }
+                                }
+                            }
+                            if root.session-apps.length == 0: Text { text: "This session has no configured apps. Add apps below, save, and relaunch to include them."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                            Rectangle { height: 12px; background: transparent; }
+                        }
                         Text { text: "Project details"; font-size: 17px; font-weight: 600; color: #22313d; }
                         Text { text: "Project name"; color: #22313d; }
                         name-edit := LineEdit {
                             text <=> root.project-name;
                             placeholder-text: "e.g. Jurabox";
-                            enabled: !root.busy && !root.delete-pending;
+                            enabled: root.form-enabled && !root.delete-pending;
                             edited => { root.dirty = true; }
                             accepted => { root.save-project(); }
                         }
@@ -192,10 +236,10 @@ export component AppWindow inherits Window {
                         LineEdit {
                             text <=> root.project-folder;
                             placeholder-text: "Paste a folder path, or leave blank";
-                            enabled: !root.busy && !root.delete-pending;
+                            enabled: root.form-enabled && !root.delete-pending;
                             edited => { root.dirty = true; }
                         }
-                        Button { text: "Browse…"; enabled: !root.busy; clicked => { root.browse-folder(); } }
+                        Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-folder(); } }
                         }
                         Text { text: "A project can have a name without a folder."; font-size: 12px; color: #65778d; }
                         Rectangle { height: 12px; background: transparent; }
@@ -203,13 +247,13 @@ export component AppWindow inherits Window {
                         Text { text: "Add an app, then choose its executable and optional arguments."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                         HorizontalLayout {
                             alignment: start;
-                            Button { text: "Find installed app"; enabled: !root.busy; clicked => { root.picker-visible = !root.picker-visible; root.search-apps(); } }
-                            Button { text: "+ Custom app"; enabled: !root.busy; clicked => { root.add-app(); } }
+                            Button { text: "Find installed app"; enabled: root.form-enabled; clicked => { root.picker-visible = !root.picker-visible; root.search-apps(); } }
+                            Button { text: "+ Custom app"; enabled: root.form-enabled; clicked => { root.add-app(); } }
                         }
                         if root.picker-visible: VerticalLayout {
                             spacing: 6px;
                             LineEdit { text <=> root.app-search; placeholder-text: "Search apps registered with Windows"; edited => { root.search-apps(); } }
-                            for app[index] in root.installed-apps: Button { text: app.name; enabled: !root.busy; clicked => { root.choose-app(index); } Tooltip { text: @markdown("\{app.executable}"); } }
+                            for app[index] in root.installed-apps: Button { text: app.name; enabled: root.form-enabled; clicked => { root.choose-app(index); } Tooltip { text: @markdown("\{app.executable}"); } }
                             Text { text: "Showing up to 6 matches. Use Custom app for anything missing."; font-size: 11px; color: #65778d; wrap: word-wrap; }
                         }
                         for app[index] in root.apps: Rectangle {
@@ -219,36 +263,36 @@ export component AppWindow inherits Window {
                                 padding: 12px;
                                 spacing: 8px;
                                 HorizontalLayout {
-                                    LineEdit { text <=> app.name; placeholder-text: "App name"; enabled: !root.busy; edited => { root.dirty = true; } }
-                                    Button { text: "Remove"; enabled: !root.busy; clicked => { root.remove-app(index); } }
+                                    LineEdit { text <=> app.name; placeholder-text: "App name"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Button { text: "Remove"; enabled: root.form-enabled; clicked => { root.remove-app(index); } }
                                 }
                                 HorizontalLayout {
-                                    LineEdit { text <=> app.executable; placeholder-text: "Full path to the .exe"; enabled: !root.busy; edited => { root.dirty = true; } }
-                                    Button { text: "Browse…"; enabled: !root.busy; clicked => { root.browse-app(index); } }
+                                    LineEdit { text <=> app.executable; placeholder-text: "Full path to the .exe"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-app(index); } }
                                 }
-                                LineEdit { text <=> app.arguments; placeholder-text: "Arguments (optional), e.g. --new-window \"{folder}\""; enabled: !root.busy; edited => { root.dirty = true; } }
-                                CheckBox { text: "Open a console window (CMD / PowerShell)"; checked <=> app.new-console; enabled: !root.busy; toggled => { root.dirty = true; } }
-                                CheckBox { text: "Shared app: follow the active project"; checked <=> app.shared; enabled: !root.busy; toggled => { root.dirty = true; } }
+                                LineEdit { text <=> app.arguments; placeholder-text: "Arguments (optional), e.g. --new-window \"{folder}\""; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                CheckBox { text: "Open a console window (CMD / PowerShell)"; checked <=> app.new-console; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                                CheckBox { text: "Shared app: follow the active project"; checked <=> app.shared; enabled: root.form-enabled; toggled => { root.dirty = true; } }
                             }
                         }
                         Text { text: "Arguments use Windows quoting. {folder} passes the project folder. Shared reuse requires a single matching window; other apps need their own new-window option."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                         Rectangle { height: 12px; background: transparent; }
                         Text { text: "Project browser"; font-size: 17px; font-weight: 600; color: #22313d; }
-                        CheckBox { text: "Open links in a new Chrome or Edge window"; checked <=> root.browser-enabled; enabled: !root.busy; toggled => { root.dirty = true; } }
+                        CheckBox { text: "Open links in a new Chrome or Edge window"; checked <=> root.browser-enabled; enabled: root.form-enabled; toggled => { root.dirty = true; } }
                         if root.browser-enabled: VerticalLayout {
                             spacing: 8px;
                             HorizontalLayout {
-                                LineEdit { text <=> root.browser-executable; placeholder-text: "Full path to chrome.exe or msedge.exe"; enabled: !root.busy; edited => { root.dirty = true; } }
-                                Button { text: "Browse…"; enabled: !root.busy; clicked => { root.browse-browser(); } }
+                                LineEdit { text <=> root.browser-executable; placeholder-text: "Full path to chrome.exe or msedge.exe"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-browser(); } }
                             }
-                            TextEdit { text <=> root.browser-urls; min-height: 100px; preferred-height: 100px; vertical-stretch: 0; placeholder-text: "One https:// link per line"; enabled: !root.busy; edited => { root.dirty = true; } }
+                            TextEdit { text <=> root.browser-urls; min-height: 100px; preferred-height: 100px; vertical-stretch: 0; placeholder-text: "One https:// link per line"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                         }
                         Rectangle { height: 20px; background: transparent; }
                         Text { text: "Inactivity policy"; font-size: 17px; font-weight: 600; color: #22313d; }
                         CheckBox {
                             text: "Enable inactivity auto-stop";
                             checked <=> root.auto-stop-enabled;
-                            enabled: !root.busy && !root.delete-pending;
+                            enabled: root.form-enabled && !root.delete-pending;
                             toggled => { root.dirty = true; }
                         }
                         HorizontalLayout {
@@ -260,7 +304,7 @@ export component AppWindow inherits Window {
                                 minimum: 1;
                                 maximum: 2147483647;
                                 preferred-width: 100px;
-                                enabled: root.auto-stop-enabled && !root.busy && !root.delete-pending;
+                                enabled: root.auto-stop-enabled && root.form-enabled && !root.delete-pending;
                                 edited => { root.dirty = true; }
                             }
                             Text { text: "minutes away from this project"; color: #22313d; }
@@ -276,8 +320,8 @@ export component AppWindow inherits Window {
                                 Text { text: "Its folder and files will stay where they are."; color: #65778d; font-size: 12px; }
                                 HorizontalLayout {
                                     alignment: start;
-                                    Button { text: "Cancel"; enabled: !root.busy; clicked => { root.delete-pending = false; } }
-                                    Button { text: "Delete project"; enabled: !root.busy; clicked => { root.delete-project(); } }
+                                    Button { text: "Cancel"; enabled: root.form-enabled; clicked => { root.delete-pending = false; } }
+                                    Button { text: "Delete project"; enabled: root.form-enabled; clicked => { root.delete-project(); } }
                                 }
                             }
                         }
@@ -300,12 +344,64 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     spacing: 10px;
-                    Button { text: root.busy ? "Saving…" : (root.editing-existing ? "Save changes" : "Save project"); primary: true; enabled: !root.busy && !root.delete-pending; clicked => { root.save-project(); } }
-                    Button { text: "Discard changes"; enabled: root.dirty && !root.busy; clicked => { root.discard-changes(); } }
+                    Button { text: root.busy ? "Saving…" : (root.editing-existing ? "Save changes" : "Save project"); primary: true; enabled: root.form-enabled && !root.delete-pending; clicked => { root.save-project(); } }
+                    Button { text: "Discard changes"; enabled: root.dirty && root.form-enabled; clicked => { root.discard-changes(); } }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                    if root.editing-existing: Button { text: "Delete project…"; enabled: !root.busy && !root.workspace-busy && !root.session-open && !root.dirty && !root.delete-pending; clicked => { root.delete-pending = true; } }
+                    if root.editing-existing: Button { text: "Delete project…"; enabled: root.form-enabled && !root.workspace-busy && !root.session-open && !root.dirty && !root.delete-pending; clicked => { root.delete-pending = true; } }
                 }
                 Text { text: "Closing this window keeps Jurabox in the system tray."; color: #65778d; font-size: 11px; }
+            }
+        }
+    }
+    Rectangle {
+        visible: root.window-picker-visible;
+        background: #22313d80;
+        TouchArea { clicked => {} }
+        Rectangle {
+            width: min(parent.width - 64px, 720px);
+            height: min(parent.height - 64px, 540px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 22px;
+                spacing: 12px;
+                Text { text: "Assign a window"; font-family: "Bahnschrift"; font-size: 26px; color: #22313d; }
+                Text { text: root.window-picker-name; font-weight: 600; color: #087f8c; overflow: elide; }
+                Text { text: "Choose the app window for this session. Other desktops are included. Windows stay open when unassigned."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    window-search-edit := LineEdit { text <=> root.window-search; placeholder-text: "Search by window title or application path"; enabled: !root.window-picker-assigning; edited => { root.filter-windows(); } }
+                    Button { text: "Refresh"; enabled: !root.window-picker-loading; clicked => { root.refresh-window-picker(); } }
+                }
+                if root.window-picker-error != "": Text { text: root.window-picker-error; color: #922d25; font-size: 12px; wrap: word-wrap; }
+                ScrollView {
+                    min-height: 100px;
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        for choice in root.window-options: Rectangle {
+                            background: #f3f6f8;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 6px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: choice.title; color: #22313d; min-width: 0px; overflow: elide; horizontal-stretch: 1; }
+                                    Button { text: "Use window"; enabled: choice.available && !root.window-picker-loading; clicked => { root.assign-window(choice.id); } }
+                                }
+                                Text { text: choice.executable; color: #65778d; font-size: 11px; overflow: elide; }
+                                if choice.assignment != "": Text { text: "Assigned to " + choice.assignment; color: choice.available ? #65778d : #99651b; font-size: 11px; wrap: word-wrap; }
+                            }
+                        }
+                        if root.window-options.length == 0: Text { text: root.window-picker-loading ? "Finding open windows…" : "No matching windows. Open the app, then Refresh."; color: #65778d; wrap: word-wrap; }
+                    }
+                }
+                Text { text: "A window can be shared across sessions when both app entries use Shared app."; color: #65778d; font-size: 11px; wrap: word-wrap; }
+                Button { text: root.window-picker-assigning ? "Assigning…" : "Cancel"; enabled: !root.window-picker-assigning; clicked => { root.cancel-window-picker(); } }
             }
         }
     }

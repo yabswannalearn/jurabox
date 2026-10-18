@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 use windows::{
     Win32::{
         Foundation::{BOOL, CloseHandle, FILETIME, HWND, LPARAM},
@@ -8,8 +8,9 @@ use windows::{
             QueryFullProcessImageNameW,
         },
         UI::WindowsAndMessaging::{
-            EnumWindows, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongW,
-            GetWindowThreadProcessId, IsWindowVisible, WS_EX_TOOLWINDOW,
+            EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetShellWindow, GetWindow,
+            GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+            WS_EX_TOOLWINDOW,
         },
     },
     core::PWSTR,
@@ -40,6 +41,18 @@ impl AppWindow {
 
     pub fn is_alive(&self) -> bool {
         inspect(self.hwnd()).is_some_and(|window| window == *self)
+    }
+
+    pub fn title(&self) -> String {
+        let mut title = [0u16; 1024];
+        // SAFETY: Windows copies a bounded caption into our local buffer. Titles
+        // are display metadata, never part of the process/window identity check.
+        let length = unsafe { GetWindowTextW(self.hwnd(), &mut title) } as usize;
+        if length == 0 {
+            "Untitled window".into()
+        } else {
+            String::from_utf16_lossy(&title[..length])
+        }
     }
 }
 
@@ -85,14 +98,26 @@ unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
     // vector. No pointer is retained. Only visible, unowned application windows qualify.
     unsafe {
         if IsWindowVisible(hwnd).as_bool()
+            && hwnd != GetShellWindow()
             && GetWindow(hwnd, GW_OWNER).is_err()
             && GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 == 0
+            && !shell_surface(hwnd)
             && let Some(window) = inspect(hwnd)
         {
             (&mut *(data.0 as *mut Vec<AppWindow>)).push(window);
         }
     }
     BOOL(1)
+}
+
+unsafe fn shell_surface(hwnd: HWND) -> bool {
+    let mut class = [0u16; 256];
+    // SAFETY: This is a bounded class-name query; no window messages are sent.
+    let length = unsafe { GetClassNameW(hwnd, &mut class) } as usize;
+    matches!(
+        String::from_utf16_lossy(&class[..length]).as_str(),
+        "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+    )
 }
 
 pub fn all() -> Result<Vec<AppWindow>> {
@@ -105,5 +130,27 @@ pub fn all() -> Result<Vec<AppWindow>> {
         )
     }
     .context("Cannot inspect application windows.")?;
+    Ok(result)
+}
+
+unsafe extern "system" fn collect_handle(hwnd: HWND, data: LPARAM) -> BOOL {
+    // SAFETY: EnumWindows calls synchronously with our local set. Include hidden
+    // windows so showing an existing window cannot be mistaken for creating one.
+    unsafe {
+        (&mut *(data.0 as *mut HashSet<isize>)).insert(hwnd.0 as isize);
+    }
+    BOOL(1)
+}
+
+pub fn handles() -> Result<HashSet<isize>> {
+    let mut result = HashSet::new();
+    // SAFETY: The set outlives every synchronous callback and contains only values.
+    unsafe {
+        EnumWindows(
+            Some(collect_handle),
+            LPARAM(&mut result as *mut HashSet<isize> as isize),
+        )
+    }
+    .context("Cannot inspect existing window identities.")?;
     Ok(result)
 }

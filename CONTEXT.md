@@ -39,6 +39,10 @@ A user-facing application associated with a **Project**, such as an editor, brow
 A user-facing application instance explicitly assigned for reuse across multiple **Workspaces**.
 _Avoid_: Duplicate app when referring to the same running instance.
 
+**Window assignment**:
+An association between an open application's window and a **Project app** within a **Project session**. Assigning a window does not make its process a **Managed service**.
+_Avoid_: Service ownership when referring only to an app window's workspace association.
+
 **Project service**:
 A background workload supporting a **Project**, such as a development server or a database.
 _Avoid_: App when referring specifically to a background workload.

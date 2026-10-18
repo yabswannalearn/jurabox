@@ -1,7 +1,9 @@
 mod app_windows;
 pub mod apps;
+mod fixture;
 mod instance;
 mod probe_window;
+pub use fixture::OwnedProbe;
 pub mod workspace;
 pub use instance::ManagerInstance;
 

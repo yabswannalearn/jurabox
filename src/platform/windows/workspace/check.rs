@@ -1,5 +1,7 @@
 use super::*;
+mod assignment;
 mod browser;
+mod console;
 use windows::Win32::{
     Foundation::{LPARAM, WPARAM},
     UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
@@ -263,6 +265,8 @@ pub(super) fn run() -> Result<()> {
     println!(
         "PASS switch without duplicates, session snapshot, deliberate relaunch, manually closed apps, close keeps app alive"
     );
+    assignment::run(&mut workspaces, &mut cleanup, &replacement, &first, &other)?;
+    let console_window = console::run(&mut workspaces, &mut cleanup)?;
     drop(cleanup);
     ensure!(
         !probe_executable.exists(),
@@ -272,6 +276,9 @@ pub(super) fn run() -> Result<()> {
         Ok(super::super::desktop_ids()? == original_ids && current_id()? == vd(original.get_id())?)
     })?;
     super::super::wait_until("child cleanup", || Ok(!replacement.is_alive()))?;
+    if let Some(window) = console_window {
+        super::super::wait_until("owned console cleanup", || Ok(!window.is_alive()))?;
+    }
     if let Some(browser_window) = browser_window {
         super::super::wait_until("owned browser window cleanup", || {
             Ok(!browser_window.is_alive())

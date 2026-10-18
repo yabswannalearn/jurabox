@@ -216,9 +216,14 @@ pub fn start_console(
         },
     };
     use windows::core::PWSTR;
-    let executable = HSTRING::from(executable.as_os_str());
-    let mut command: Vec<u16> = format!("\"{executable}\" {arguments}")
-        .encode_utf16()
+    // CreateProcess accepts forward slashes, but cmd.exe interprets a slash in
+    // its own argv[0] as an option separator and can silently corrupt /c scripts.
+    let native_path: PathBuf = executable.components().collect();
+    let executable = HSTRING::from(native_path.as_os_str());
+    let mut command: Vec<u16> = std::iter::once(b'"' as u16)
+        .chain(executable.as_wide().iter().copied())
+        .chain([b'"' as u16, b' ' as u16])
+        .chain(arguments.encode_utf16())
         .chain(Some(0))
         .collect();
     let folder = folder.map(|path| HSTRING::from(path.as_os_str()));

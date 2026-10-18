@@ -3,7 +3,7 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{
-    ManagerInstance, activate_management_window, desktop_check, probe_window, status,
+    ManagerInstance, OwnedProbe, activate_management_window, desktop_check, probe_window, status,
     workspace_check,
 };
 #[cfg(windows)]
