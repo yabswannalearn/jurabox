@@ -85,7 +85,7 @@ pub(super) fn run() -> Result<()> {
                 }
                 1 => {
                     let data = ProjectStore::new(path.clone()).load()?;
-                    ensure!(data.version == 4 && data.projects[0].workloads.len() == 3 && data.projects[0].workloads[2].kind == WorkloadKind::StartupAction, "Typed workload form did not persist");
+                    ensure!(data.version == 5 && data.projects[0].workloads.len() == 3 && data.projects[0].workloads[2].kind == WorkloadKind::StartupAction, "Typed workload form did not persist");
                     ensure!(matches!(data.projects[0].workloads[0].readiness, Readiness::Http { .. }) && data.projects[0].workloads[0].readiness_timeout_seconds == 1 && data.projects[0].workloads[0].dependencies == vec![data.projects[0].workloads[2].id], "Readiness or stable prerequisite selection did not persist");
                     // Scroll to inspect the saved command editor before launch.
                     window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -720. })?;

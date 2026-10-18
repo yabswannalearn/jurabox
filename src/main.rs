@@ -19,6 +19,7 @@ enum Command {
     AssignmentCheck,
     ServiceCheck,
     ServiceUiCheck,
+    ComposeCheck,
     ServiceFixture {
         mode: String,
         folder: std::path::PathBuf,
@@ -42,6 +43,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         ["assignment-check", "--exercise"] => Ok(Command::AssignmentCheck),
         ["service-check", "--exercise"] => Ok(Command::ServiceCheck),
         ["service-ui-check", "--exercise"] => Ok(Command::ServiceUiCheck),
+        ["compose-check", "--exercise"] => Ok(Command::ComposeCheck),
         ["_service-fixture", mode, folder] => Ok(Command::ServiceFixture {
             mode: (*mode).into(),
             folder: (*folder).into(),
@@ -53,7 +55,8 @@ fn parse_command(args: &[String]) -> Result<Command> {
         | ["workspace-check"]
         | ["assignment-check"]
         | ["service-check"]
-        | ["service-ui-check"] => bail!(
+        | ["service-ui-check"]
+        | ["compose-check"] => bail!(
             "This check requires --exercise: it temporarily switches desktops and opens test windows"
         ),
         _ => bail!("unknown command; run jurabox --help for usage"),
@@ -70,6 +73,16 @@ fn run() -> Result<()> {
         Command::WorkspaceCheck => platform::workspace_check(),
         Command::AssignmentCheck => ui::assignment_check(),
         Command::ServiceUiCheck => ui::service_check(),
+        Command::ComposeCheck => {
+            #[cfg(windows)]
+            {
+                services::compose_check()
+            }
+            #[cfg(not(windows))]
+            {
+                bail!("Compose checks require Windows 11.")
+            }
+        }
         Command::ServiceCheck => {
             #[cfg(windows)]
             {
@@ -104,6 +117,7 @@ fn run() -> Result<()> {
                  jurabox assignment-check --exercise Verify manual window assignment with an owned fixture\n\n\
                  jurabox service-check --exercise   Verify owned command services with finite fixtures\n\n\
                  jurabox service-ui-check --exercise Verify service controls in a temporary workspace\n\n\
+                 jurabox compose-check --exercise   Verify private Docker Compose containers\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );

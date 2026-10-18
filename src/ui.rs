@@ -199,7 +199,7 @@ fn request_quit(window: &AppWindow) {
         show(window);
         notice(
             window,
-            "Managed workloads are running. Choose Stop services and quit, or stop them individually first.",
+            "Managed workloads or kept Compose containers still belong to this session. Choose Stop services and quit, or close their sessions first.",
             true,
         );
     } else if can_leave_form(window) {

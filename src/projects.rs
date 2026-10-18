@@ -8,7 +8,7 @@ use std::{
 use uuid::Uuid;
 
 mod workloads;
-pub use workloads::{CommandSpec, Readiness, WorkloadConfig, WorkloadKind};
+pub use workloads::{CommandSpec, ComposeConfig, Readiness, WorkloadConfig, WorkloadKind};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,7 +163,7 @@ pub struct ProjectFile {
 impl Default for ProjectFile {
     fn default() -> Self {
         Self {
-            version: 4,
+            version: 5,
             projects: Vec::new(),
         }
     }
@@ -188,7 +188,7 @@ impl ProjectFile {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 4,
+            self.version == 5,
             "This project file uses unsupported version {}. Keep the file and use a compatible Jurabox version.",
             self.version
         );
@@ -240,8 +240,8 @@ impl ProjectStore {
                 self.path.display()
             )
         })?;
-        if matches!(data.version, 1..=3) {
-            data.version = 4;
+        if matches!(data.version, 1..=4) {
+            data.version = 5;
         }
         data.validate()?;
         Ok(data)
@@ -319,7 +319,7 @@ mod tests {
         fs::write(&path, &old).unwrap();
         let store = ProjectStore::new(path.clone());
         let data = store.load().unwrap();
-        assert_eq!(data.version, 4);
+        assert_eq!(data.version, 5);
         assert!(data.projects[0].apps.is_empty() && data.projects[0].browser.is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         store.save(&data).unwrap();
@@ -380,11 +380,11 @@ mod tests {
     #[test]
     fn unsupported_versions_and_duplicate_ids_are_rejected() {
         let mut data = ProjectFile {
-            version: 5,
+            version: 6,
             ..Default::default()
         };
         assert!(data.validate().is_err());
-        data.version = 4;
+        data.version = 5;
         let entry = project("First");
         data.projects.extend([entry.clone(), entry]);
         assert!(data.validate().is_err());

@@ -217,6 +217,30 @@ pub fn run() -> Result<()> {
                 }
                 13 => {
                     snapshot(&window, &artifacts.join("browser-scrolled.png"))?;
+                    window.invoke_add_compose();
+                    let drafts = window.get_workloads();
+                    let mut draft = drafts.row_data(0).context("Compose form was not added")?;
+                    draft.name = "Project database".into();
+                    draft.executable = std::env::current_exe()?.to_string_lossy().into_owned().into();
+                    draft.compose_file = folder.join("compose.yaml").to_string_lossy().into_owned().into();
+                    draft.docker_context = "desktop-linux".into();
+                    draft.folder = folder.to_string_lossy().into_owned().into();
+                    drafts.set_row_data(0, draft);
+                    window.set_dirty(true); window.invoke_save_project();
+                }
+                14 => {
+                    let data = read()?;
+                    ensure!(data.projects[0].workloads.len() == 1 && data.projects[0].workloads[0].kind == crate::projects::WorkloadKind::DockerCompose && data.projects[0].workloads[0].compose.as_ref().is_some_and(|value| value.context == "desktop-linux"), "Compose form did not persist");
+                    ensure!(!window.get_session_open(), "Saving Compose settings opened a workspace");
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -380. })?;
+                }
+                15 => {
+                    snapshot(&window, &artifacts.join("compose-editor.png"))?;
+                    window.invoke_remove_workload(0); window.invoke_save_project();
+                }
+                16 => {
+                    ensure!(read()?.projects[0].workloads.is_empty(), "Compose form removal did not persist");
+                    println!("PASS Compose form add/save/reload/remove without starting Docker");
                     window.invoke_quit();
                     return Ok(true);
                 }

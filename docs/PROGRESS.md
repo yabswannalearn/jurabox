@@ -229,3 +229,35 @@ Compact HTTP editor, Waiting, Not ready, running/output, and stop-failure snapsh
 ### Remaining work
 
 Compose-specific ownership and non-escalating shutdown, environment overrides, and richer progress/cancellation remain in milestone 3. Inactivity timers, Keep running, return-during-stop handling, durable output, leave-running quit, session persistence, and verified reconnection remain later lifecycle work. Existing saved inactivity values still do not stop workloads. Full application compatibility and release-performance validation remain open.
+
+## Milestone 3: Local Docker Compose workloads
+
+The user requested continuing after the readiness/dependency phase. [PR #5](https://github.com/yabswannalearn/jurabox/pull/5) was merged as `1a89d3e`, preserving phase commit `753ebb5`. This slice starts from that main on `codex/compose-services`.
+
+### Implemented scope
+
+- A typed Compose workload and UI fields for Docker executable, Compose file, local context, working folder, readiness, prerequisites, and normal shutdown deadline.
+- Settings schema 5 with in-memory version 1–4 migration until Save. Existing command/action readiness and dependency settings are preserved.
+- A dedicated worker per opened Compose workload. Its pinned local named-pipe endpoint and engine ID remain separate from the Docker CLI client jobs and container ownership.
+- A stable project/workload namespace, random owner-token labels, full container IDs and creation identities, and verification before lifecycle control. Existing/unverified namespaces are rejected without adoption. Incomplete CLI operations remain tracked and prevent replacement attempts.
+- Canonical Compose session snapshots, image pull on missing, create without start/recreate/build, then start of verified container IDs. Subsequent Start reuses the containers and frozen setup. Named volumes have stable names across sessions.
+- Compose started/healthy/completed prerequisites, finite initialization containers, and integration with Jurabox workload dependencies. Independent roots start first; normal shutdown works in reverse order and retains prerequisites of live dependents.
+- Non-escalating normal container signals with explicit Force stop, bounded combined logs, container-exit reporting, and kept ownership on uncertainty. SIGKILL and equivalent numeric signal 9 are forbidden for normal shutdown.
+- Stop retaining containers; Close/Relaunch/Stop-and-quit removing verified stopped containers while preserving volumes, bind mounts, images, and networks. Ordinary Quit also guards kept Compose containers.
+- A finite private Docker exercise and extended UI form/persistence checks. Diagnostic cleanup uses only its newly created private namespace and never Docker prune or process/image/name matching of existing user workloads.
+
+The [Compose ownership ADR](adr/0006-manage-owned-compose-containers.md) records lifecycle, ownership, snapshot, context, and supported-file decisions. The first slice supports a local Linux Docker Desktop engine, up to 32 single-container services, and prebuilt images; explicit container names, profiles, restart policies, lifecycle hooks, optional/restarting dependencies, and replicas require later validation.
+
+### Validation
+
+The development host has Docker Desktop 4.43.2, Engine 28.3.2, and Compose 2.38.2-desktop.1. Its engine was stopped initially and was started for the exercise; pre-existing user containers were inventoried separately and were not test targets. `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` (23 tests), and `cargo build --locked` passed. New unit coverage includes schema 4 migration/Compose round trips, shell-free Windows argument quoting, supported-file validation and dependency ordering, owner/creation identity rejection, and normal-stop rejection of SIGKILL and equivalent numeric spellings.
+
+The first live Docker attempt exposed double escaping of literal dollars in canonical Compose output, which broke a shell command. The snapshot now preserves Compose's existing escaping. The same attempt exposed a startup-exit status that could stay on Starting; exited containers now report failure. Both regressions passed the final real-engine rerun: literal command/environment values remained intact, and a command exiting with code 7 reported Failed while explicit Retry reused its container.
+
+`compose-check --exercise` passed actual creation, exact-container ownership, duplicate avoidance, bounded output, normal Stop/Start retaining the same IDs, frozen setup after source edits, and rejection of another unverified session. It passed Compose healthy/completed prerequisites, a Jurabox action waiting for the stack, refusal to Force stop an unverified namespace member while leaving the existing container running, normal shutdown, timeout retention, and explicit scoped Force stop. The private fixtures have a 60-second fail-safe. Their database-image volume path uses tmpfs to avoid allocating anonymous volumes; cleanup removes only fixture containers and verified private networks/named volumes. The final run left the Docker volume inventory unchanged. Original user container IDs remained present with their prior running/stopped states.
+
+The extended `ui-check` passed real Compose form add/save/reload/remove without launching a workspace. Its compact editor snapshot was inspected. Existing core service/readiness and service UI exercises passed again, including real CMD/PowerShell output, owned child jobs, readiness Retry/dependencies, old-session shutdown rules, and failed Close/relaunch/quit retention. Assignment and workspace exercises passed with real Edge browser links and the CMD/terminal-host fixture. They restored the original two desktop GUIDs and original active desktop and closed their owned windows. These checks do not establish general Compose/app compatibility or release performance.
+
+### Remaining work
+
+Durable session/ownership records, verified reconnection, a leave-running exit, cleanup of abandoned runtime snapshots, environment override forms, inactivity timers, Keep running, and richer progress/cancellation remain. A manager restart does not reconnect containers; unknown leftovers are reported as conflicts. No automatic inactivity stop is enabled in this slice. Remote contexts, broader Compose compatibility, full application/elevation/scaling/accessibility pilots, and release-performance measurements remain open.

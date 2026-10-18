@@ -37,6 +37,7 @@ pub(crate) fn fixture_config(
         readiness: Default::default(),
         readiness_timeout_seconds: 60,
         dependencies: Vec::new(),
+        compose: None,
     })
 }
 
