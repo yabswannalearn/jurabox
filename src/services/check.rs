@@ -34,12 +34,15 @@ pub(crate) fn fixture_config(
             arguments: r#"_service-fixture stop "{folder}""#.into(),
         }),
         stop_timeout_seconds: 1,
+        readiness: Default::default(),
+        readiness_timeout_seconds: 60,
+        dependencies: Vec::new(),
     })
 }
 
-struct OwnedCheck(Services);
+pub(super) struct OwnedCheck(pub(super) Services);
 impl OwnedCheck {
-    fn new(configs: Vec<WorkloadConfig>) -> Result<Self> {
+    pub(super) fn new(configs: Vec<WorkloadConfig>) -> Result<Self> {
         let mut project = Project::from_form(None, "Private service fixture", "", None)?;
         project.workloads = configs;
         project.validate()?;
@@ -328,5 +331,6 @@ pub fn run() -> Result<()> {
         "Another workload was affected by the exercise"
     );
     println!("Service checks passed; only owned finite fixtures were launched.");
+    super::readiness_check::run(root)?;
     Ok(())
 }

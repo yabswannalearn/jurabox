@@ -1,12 +1,12 @@
-import { AboutSlint, Button, CheckBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
 
 export struct ProjectRow { name: string, folder: string }
 export struct AppDraft { id: string, name: string, executable: string, arguments: string, new-console: bool, shared: bool }
 export struct InstalledRow { name: string, executable: string }
 export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool }
 export struct WindowOptionRow { id: string, title: string, executable: string, assignment: string, available: bool }
-export struct WorkloadDraft { id: string, name: string, one-shot: bool, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int }
-export struct WorkloadRow { id: string, name: string, kind: string, status: string, detail: string, output: string, error: bool, live: bool, can-start: bool }
+export struct WorkloadDraft { id: string, name: string, one-shot: bool, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int, readiness: int, readiness-endpoint: string, readiness-timeout: int, dependencies: string }
+export struct WorkloadRow { id: string, name: string, kind: string, status: string, detail: string, output: string, error: bool, live: bool, can-start: bool, can-stop: bool }
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/jurabox.svg");
@@ -93,6 +93,8 @@ export component AppWindow inherits Window {
     callback remove-workload(int);
     callback browse-workload(int, int);
     callback service-action(string, string);
+    pure callback has-dependency(string, string) -> bool;
+    callback toggle-dependency(int, string, bool);
     callback stop-and-quit();
     callback show-window-picker(string);
     callback refresh-window-picker();
@@ -231,7 +233,7 @@ export component AppWindow inherits Window {
                                         alignment: start;
                                         spacing: 8px;
                                         Button { text: service.status == "Completed" ? "Run again" : (service.error ? "Retry" : "Start"); enabled: service.can-start && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "start"); } }
-                                        Button { text: "Stop"; enabled: service.live && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "stop"); } }
+                                        Button { text: "Stop"; enabled: service.can-stop && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "stop"); } }
                                         Button { text: "Force stop"; enabled: service.live && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "force"); } }
                                     }
                                     if service.output != "": Rectangle {
@@ -354,7 +356,7 @@ export component AppWindow inherits Window {
                                     LineEdit { text <=> service.name; placeholder-text: "Service or action name"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                     Button { text: "Remove"; enabled: root.form-enabled; clicked => { root.remove-workload(index); } }
                                 }
-                                CheckBox { text: "Finite startup action"; checked <=> service.one-shot; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                                CheckBox { text: "Finite startup action"; checked <=> service.one-shot; enabled: root.form-enabled; toggled => { if self.checked { service.readiness = 0; } root.dirty = true; } }
                                 Text { text: "Start command"; color: #22313d; font-size: 12px; }
                                 HorizontalLayout {
                                     LineEdit { text <=> service.executable; placeholder-text: "Full path to the .exe"; enabled: root.form-enabled; edited => { root.dirty = true; } }
@@ -366,6 +368,30 @@ export component AppWindow inherits Window {
                                     LineEdit { text <=> service.folder; placeholder-text: "Blank uses the project folder"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                     Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-workload(index, 1); } }
                                 }
+                                Text { text: "Startup readiness"; color: #22313d; font-size: 12px; }
+                                ComboBox { model: ["Process running", "TCP port accepting connections", "HTTP health URL (2xx)"]; current-index <=> service.readiness; enabled: root.form-enabled && !service.one-shot; selected(_) => { root.dirty = true; } }
+                                if service.one-shot: Text { text: "Other workloads wait until this action finishes successfully."; font-size: 11px; color: #65778d; wrap: word-wrap; }
+                                if service.readiness != 0: VerticalLayout {
+                                    spacing: 8px;
+                                    LineEdit { text <=> service.readiness-endpoint; placeholder-text: service.readiness == 1 ? "127.0.0.1:3000 or [::1]:3000" : "http://127.0.0.1:3000/health"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        Text { text: "Ready within"; font-size: 12px; color: #22313d; }
+                                        SpinBox { value <=> service.readiness-timeout; minimum: 1; maximum: 3600; preferred-width: 90px; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                        Text { text: "seconds after this command starts"; font-size: 12px; color: #22313d; }
+                                    }
+                                }
+                                Text { text: "Wait for prerequisites"; color: #22313d; font-size: 12px; }
+                                for prerequisite in root.workloads: VerticalLayout {
+                                  spacing: 0px;
+                                  if prerequisite.id != service.id: CheckBox {
+                                    text: prerequisite.name == "" ? "Unnamed workload" : prerequisite.name;
+                                    checked: root.has-dependency(service.dependencies, prerequisite.id);
+                                    enabled: root.form-enabled;
+                                    toggled => { root.toggle-dependency(index, prerequisite.id, self.checked); }
+                                  }
+                                }
+                                if root.workloads.length == 1: Text { text: "Add another service or startup action to choose a prerequisite."; font-size: 11px; color: #65778d; wrap: word-wrap; }
                                 Text { text: "Normal stop command (optional)"; color: #22313d; font-size: 12px; }
                                 HorizontalLayout {
                                     LineEdit { text <=> service.stop-executable; placeholder-text: "Full .exe path for a normal stop request"; enabled: root.form-enabled; edited => { root.dirty = true; } }
@@ -381,7 +407,7 @@ export component AppWindow inherits Window {
                                 Text { text: "Stop leaves the workload running if the command is missing, fails, or times out. Force stop is always explicit."; color: #65778d; font-size: 11px; wrap: word-wrap; }
                             }
                         }
-                        Text { text: "Readiness currently checks that the process is running. Recent output is kept in memory with a limit. Configure scripts through CMD, PowerShell, or another explicit shell."; color: #65778d; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "Readiness is checked during startup. A timeout leaves the workload running; Retry checks it again. Configure scripts through an explicit shell."; color: #65778d; font-size: 12px; wrap: word-wrap; }
                         Rectangle { height: 20px; background: transparent; }
                         Text { text: "Inactivity policy"; font-size: 17px; font-weight: 600; color: #22313d; }
                         CheckBox {

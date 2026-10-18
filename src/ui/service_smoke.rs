@@ -1,5 +1,8 @@
 use super::*;
-use crate::{projects::WorkloadKind, services::fixture_config};
+use crate::{
+    projects::{Readiness, WorkloadKind},
+    services::{fixture_config, health_config},
+};
 use anyhow::{bail, ensure};
 use slint::Model;
 use std::{cell::RefCell, rc::Rc, time::Duration};
@@ -13,11 +16,10 @@ pub(super) fn run() -> Result<()> {
     let mut desktops = assignment_smoke::Desktops::new(name.clone())?;
     let path = temporary.path().join("projects.json");
     let mut project = Project::from_form(None, &name, &temporary.path().to_string_lossy(), None)?;
-    let first = fixture_config(
-        &temporary.path().join("normal"),
-        "long",
-        WorkloadKind::CommandService,
-    )?;
+    let first_folder = temporary.path().join("normal");
+    let mut first = health_config(&first_folder, true)?;
+    first.readiness_timeout_seconds = 1;
+    std::fs::write(first_folder.join("allow-ready"), "ready")?;
     let mut second = fixture_config(
         &temporary.path().join("refuses"),
         "long",
@@ -69,14 +71,24 @@ pub(super) fn run() -> Result<()> {
                     let drafts = window.get_workloads(); let mut action = drafts.row_data(2).context("Startup action form was not added")?;
                     action.name = "Prepare project".into();
                     action.executable = std::env::current_exe()?.to_string_lossy().into_owned().into();
-                    action.arguments = "_service-fixture success \"{folder}\"".into();
-                    drafts.set_row_data(2, action); window.set_dirty(true); window.invoke_save_project();
+                    action.arguments = "_service-fixture delayed-success \"{folder}\"".into();
+                    let action_id = action.id.clone();
+                    drafts.set_row_data(2, action);
+                    window.invoke_toggle_dependency(0, action_id.clone(), true);
+                    window.invoke_toggle_dependency(2, first_id.clone().into(), true);
+                    window.invoke_save_project();
+                    ensure!(window.get_notice_error() && window.get_dirty(), "A cyclic dependency was saved or discarded the draft");
+                    window.invoke_toggle_dependency(2, first_id.clone().into(), false);
+                    window.invoke_remove_workload(2);
+                    ensure!(window.get_workloads().row_count() == 3 && window.get_notice_error(), "Removing a referenced prerequisite stranded an invisible ID");
+                    window.set_dirty(true); window.invoke_save_project();
                 }
                 1 => {
                     let data = ProjectStore::new(path.clone()).load()?;
-                    ensure!(data.version == 3 && data.projects[0].workloads.len() == 3 && data.projects[0].workloads[2].kind == WorkloadKind::StartupAction, "Typed workload form did not persist");
+                    ensure!(data.version == 4 && data.projects[0].workloads.len() == 3 && data.projects[0].workloads[2].kind == WorkloadKind::StartupAction, "Typed workload form did not persist");
+                    ensure!(matches!(data.projects[0].workloads[0].readiness, Readiness::Http { .. }) && data.projects[0].workloads[0].readiness_timeout_seconds == 1 && data.projects[0].workloads[0].dependencies == vec![data.projects[0].workloads[2].id], "Readiness or stable prerequisite selection did not persist");
                     // Scroll to inspect the saved command editor before launch.
-                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -420. })?;
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -720. })?;
                 }
                 2 => {
                     smoke::snapshot(&window, &artifacts.join("service-editor.png"))?;
@@ -84,6 +96,19 @@ pub(super) fn run() -> Result<()> {
                     window.invoke_open_project();
                 }
                 3 => {
+                    if first_row().is_some_and(|row| row.status == "Waiting") {
+                        smoke::snapshot(&window, &artifacts.join("services-waiting.png"))?;
+                        std::fs::write(temporary.path().join("allow-action"), "ready")?;
+                        return Ok(());
+                    }
+                    if first_row().is_some_and(|row| row.status == "Not ready") {
+                        ensure!(first_row().is_some_and(|row| row.live && row.can_start), "Not-ready workload cannot be retried in place");
+                        smoke::snapshot(&window, &artifacts.join("services-not-ready.png"))?;
+                        std::fs::write(first_folder.join("http-status"), "204")?;
+                        window.invoke_service_action(first_id.clone().into(), "start".into());
+                        return Ok(());
+                    }
+                    if !first_row().is_some_and(|row| row.status == "Running") { return Ok(()); }
                     if rows.len() != 3 || !rows.iter().any(|row| row.status == "Completed") || !first_row().is_some_and(|row| row.output.contains("Fixture ready")) || !second_row().is_some_and(|row| row.live) { return Ok(()); }
                     ensure!(window.get_session_open() && window.get_managed_live(), "Service session did not become live");
                     smoke::snapshot(&window, &artifacts.join("services-running.png"))?;
