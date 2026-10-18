@@ -11,6 +11,8 @@ use std::{
 use uuid::Uuid;
 
 mod check;
+mod compose;
+pub use compose::check::run as compose_check;
 mod coordination;
 mod fixture;
 mod probe;
@@ -37,6 +39,7 @@ pub struct View {
     pub output: String,
     pub error: bool,
     pub live: bool,
+    pub retained: bool,
     pub can_start: bool,
     pub can_stop: bool,
 }
@@ -71,6 +74,7 @@ struct Entry {
     probe: Option<probe::Probe>,
     last_probe: Instant,
     preflight_clear: bool,
+    compose: Option<compose::Runtime>,
 }
 
 fn active(process: &Option<ManagedProcess>) -> bool {
@@ -80,11 +84,52 @@ fn active(process: &Option<ManagedProcess>) -> bool {
 }
 
 impl Entry {
+    fn workload_live(&self) -> bool {
+        self.compose
+            .as_ref()
+            .map_or_else(|| active(&self.process), compose::Runtime::live)
+    }
     fn live(&self) -> bool {
-        active(&self.process) || active(&self.stop_process)
+        self.workload_live() || active(&self.stop_process)
     }
 
     fn poll(&mut self) {
+        if let Some(compose) = &mut self.compose {
+            compose.poll();
+            if let Some(error) = compose.error().filter(|_| !compose.busy()) {
+                self.ready = false;
+                self.detail = error.to_owned();
+                if self.deadline.is_none() {
+                    self.status = if compose.live() {
+                        Status::NotReady
+                    } else {
+                        Status::Failed
+                    };
+                    self.readiness_deadline = None;
+                }
+            } else if self.status == Status::Starting && compose.started() && compose.available() {
+                if self.config.readiness == Readiness::ProcessRunning {
+                    self.status = Status::Running;
+                    self.ready = true;
+                    self.detail = "The owned Compose containers are running.".into();
+                } else if self.readiness_deadline.is_none() {
+                    self.readiness_deadline = Some(
+                        compose.started_at().unwrap_or_else(Instant::now)
+                            + Duration::from_secs(self.config.readiness_timeout_seconds as u64),
+                    );
+                    self.last_probe = Instant::now() - Duration::from_secs(1);
+                }
+            } else if matches!(
+                self.status,
+                Status::Starting | Status::Running | Status::NotReady
+            ) && compose.started()
+                && !compose.available()
+            {
+                self.status = Status::Failed;
+                self.ready = false;
+                self.detail = "A Compose container exited or became unavailable. Other workloads stay running. Retry when ready.".into();
+            }
+        }
         let live = self.live();
         if let Some((completed, result)) = self.probe.as_ref().and_then(|probe| probe.result()) {
             let probe = self.probe.take().unwrap();
@@ -99,7 +144,7 @@ impl Entry {
                     }
                 } else if !probe.preflight
                     && self.status == Status::Starting
-                    && active(&self.process)
+                    && self.workload_live()
                     && self
                         .readiness_deadline
                         .is_some_and(|deadline| completed <= deadline)
@@ -150,10 +195,12 @@ impl Entry {
                 self.detail = "Shutdown timed out. The workload or stop command is still running. Retry Stop or explicitly Force stop.".into();
                 self.deadline = None;
             }
-        } else if matches!(
-            self.status,
-            Status::Running | Status::Starting | Status::NotReady
-        ) {
+        } else if self.compose.is_none()
+            && matches!(
+                self.status,
+                Status::Running | Status::Starting | Status::NotReady
+            )
+        {
             match self
                 .process
                 .as_ref()
@@ -190,6 +237,7 @@ impl Entry {
             self.detail = "The workload and its stop command have exited.".into();
         }
         if self.status == Status::Starting
+            && self.readiness_deadline.is_some()
             && self.probe.is_none()
             && self.last_probe.elapsed() >= Duration::from_millis(500)
         {
@@ -233,12 +281,39 @@ impl Entry {
         if self.config.kind == WorkloadKind::StartupAction {
             self.status == Status::Completed && !self.live()
         } else {
-            self.ready && active(&self.process) && self.deadline.is_none()
+            self.ready
+                && self.workload_live()
+                && self.deadline.is_none()
+                && self
+                    .compose
+                    .as_ref()
+                    .is_none_or(compose::Runtime::available)
         }
     }
 
     fn queue_start(&mut self) -> String {
         self.poll();
+        if self.compose.is_some()
+            && (matches!(
+                self.status,
+                Status::NotReady | Status::StopFailed | Status::Failed
+            ))
+        {
+            if let Some(compose) = &mut self.compose
+                && let Err(error) = compose.start()
+            {
+                self.detail = format!("{error:#}");
+                return self.detail.clone();
+            }
+            self.status = Status::Starting;
+            self.ready = false;
+            self.readiness_deadline = None;
+            self.attempt = Uuid::new_v4();
+            return format!(
+                "Checking and starting only the owned containers for {}.",
+                self.config.name
+            );
+        }
         if self.live() {
             if matches!(self.status, Status::NotReady | Status::StopFailed)
                 && !active(&self.stop_process)
@@ -292,6 +367,13 @@ impl Entry {
                 self.config.name
             ));
         }
+        if let Some(compose) = &mut self.compose {
+            compose.start()?;
+            self.status = Status::Starting;
+            self.ready = false;
+            self.detail = "Preparing the project's Compose containers…".into();
+            return Ok(format!("Starting {} in Docker…", self.config.name));
+        }
         self.process = None;
         self.stop_process = None;
         self.deadline = None;
@@ -333,6 +415,16 @@ impl Entry {
     fn request_stop(&mut self) -> Result<()> {
         self.poll();
         self.cancel_startup();
+        if let Some(compose) = &mut self.compose {
+            compose.stop()?;
+            self.status = Status::Stopping;
+            self.deadline =
+                Some(Instant::now() + Duration::from_secs(self.config.stop_timeout_seconds as u64));
+            self.detail =
+                "Sending normal stop signals to the owned containers. No automatic Force stop."
+                    .into();
+            return Ok(());
+        }
         if !self.live() {
             self.status = Status::Stopped;
             return Ok(());
@@ -373,6 +465,11 @@ impl Entry {
 
     fn force_stop(&mut self) -> Result<String> {
         self.cancel_startup();
+        self.status = Status::StopFailed;
+        self.detail = "Force stop has not finished; the workload remains managed.".into();
+        if let Some(compose) = &mut self.compose {
+            compose.force()?;
+        }
         for process in [&self.process, &self.stop_process].into_iter().flatten() {
             if process.active()? {
                 process.force_stop()?;
@@ -398,6 +495,9 @@ impl Entry {
             .as_ref()
             .map(ManagedProcess::output)
             .unwrap_or_default();
+        if let Some(compose) = &self.compose {
+            output = compose.output().to_owned();
+        }
         if let Some(stop) = &self.stop_process {
             let text = stop.output();
             if !text.is_empty() {
@@ -412,6 +512,7 @@ impl Entry {
             kind: match self.config.kind {
                 WorkloadKind::CommandService => "Command service",
                 WorkloadKind::StartupAction => "Startup action",
+                WorkloadKind::DockerCompose => "Docker Compose",
             }
             .into(),
             status: match self.status {
@@ -435,9 +536,15 @@ impl Entry {
                 Status::Failed | Status::StopFailed | Status::NotReady
             ),
             live,
+            retained: self
+                .compose
+                .as_ref()
+                .is_some_and(compose::Runtime::retained),
             can_start: ((!live && !matches!(self.status, Status::Waiting | Status::Checking))
-                || (matches!(self.status, Status::NotReady | Status::StopFailed)
-                    && !active(&self.stop_process)))
+                || (matches!(
+                    self.status,
+                    Status::NotReady | Status::StopFailed | Status::Failed
+                ) && !active(&self.stop_process)))
                 && self.deadline.is_none(),
             can_stop: live
                 || matches!(
@@ -475,6 +582,15 @@ impl Services {
                     probe: None,
                     last_probe: Instant::now() - Duration::from_secs(1),
                     preflight_clear: false,
+                    compose: if config.kind == WorkloadKind::DockerCompose {
+                        Some(compose::Runtime::new(
+                            project.id,
+                            config,
+                            config.folder(project.folder.as_deref())?,
+                        )?)
+                    } else {
+                        None
+                    },
                 })
             })
             .collect::<Result<_>>()?;
@@ -521,6 +637,10 @@ impl Services {
         self.live()
             || self.entries.iter().any(|entry| {
                 !entry.capture_drained
+                    || entry
+                        .compose
+                        .as_ref()
+                        .is_some_and(compose::Runtime::activity)
                     || entry.probe.is_some()
                     || matches!(
                         entry.status,
@@ -608,6 +728,16 @@ impl Services {
             .map(|entry| format!("{}: {}", entry.config.name, entry.detail))
             .collect();
         ensure!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<()> {
+        self.stop_all()?;
+        for entry in &mut self.entries {
+            if let Some(compose) = &mut entry.compose {
+                compose.release()?;
+            }
+        }
         Ok(())
     }
 }

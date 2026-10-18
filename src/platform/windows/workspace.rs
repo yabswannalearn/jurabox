@@ -86,7 +86,7 @@ impl Workspaces {
         if let Some(session) = self.sessions.get_mut(&id) {
             session
                 .services
-                .stop_all()
+                .finish()
                 .context("Session remains open because managed workloads have not stopped.")?;
         }
         self.sessions.remove(&id);
@@ -136,7 +136,7 @@ impl Workspaces {
             .filter_map(|session| {
                 session
                     .services
-                    .stop_all()
+                    .finish()
                     .err()
                     .map(|error| format!("{}: {error:#}", session.setup.name))
             })
@@ -164,7 +164,7 @@ impl Workspaces {
         // Always retain the session, including partial launches and integration failures.
         let result = (|| {
             if existing && relaunch {
-                session.services.stop_all().context(
+                session.services.finish().context(
                     "Relaunch paused. Resolve the old session's stop failure, then relaunch again.",
                 )?;
             }

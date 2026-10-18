@@ -5,6 +5,15 @@ use super::*;
 pub enum WorkloadKind {
     CommandService,
     StartupAction,
+    DockerCompose,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComposeConfig {
+    pub file: PathBuf,
+    #[serde(default)]
+    pub context: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -69,6 +78,8 @@ pub struct WorkloadConfig {
     pub readiness_timeout_seconds: u32,
     #[serde(default)]
     pub dependencies: Vec<Uuid>,
+    #[serde(default)]
+    pub compose: Option<ComposeConfig>,
 }
 
 fn stop_timeout() -> u32 {
@@ -134,6 +145,30 @@ impl WorkloadConfig {
             "Give each service or startup action a name."
         );
         self.start.validate().with_context(|| self.name.clone())?;
+        if self.kind == WorkloadKind::DockerCompose {
+            let compose = self.compose.as_ref().context("Choose a Compose file.")?;
+            ensure!(
+                compose.file.is_absolute(),
+                "Choose a full Compose file path."
+            );
+            ensure!(
+                !compose.context.contains(['\0', '\r', '\n']),
+                "Choose a valid Docker context name."
+            );
+            ensure!(
+                self.stop.is_none(),
+                "Compose uses its containers' normal stop signals; remove the custom stop command."
+            );
+            ensure!(
+                self.start.arguments.is_empty(),
+                "Compose arguments are generated from its typed settings."
+            );
+        } else {
+            ensure!(
+                self.compose.is_none(),
+                "Only Docker Compose entries can contain Compose settings."
+            );
+        }
         ensure!(
             self.folder(project_folder)?.is_absolute(),
             "Choose a full working folder path for {}.",
@@ -183,6 +218,39 @@ impl WorkloadConfig {
 mod tests {
     use super::*;
 
+    #[test]
+    fn compose_configuration_round_trips_and_version_four_loads_without_rewriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("projects.json");
+        let mut project = Project::from_form(None, "Containers", r"D:\Work", None).unwrap();
+        let mut entry = config();
+        entry.kind = WorkloadKind::DockerCompose;
+        entry.start.arguments.clear();
+        entry.compose = Some(ComposeConfig {
+            file: r"D:\Work\compose.yaml".into(),
+            context: "desktop-linux".into(),
+        });
+        project.workloads.push(entry);
+        let mut file = ProjectFile::default();
+        file.upsert(project);
+        let store = ProjectStore::new(path.clone());
+        store.save(&file).unwrap();
+        assert_eq!(store.load().unwrap(), file);
+        let mut old = serde_json::to_value(&file).unwrap();
+        old["version"] = 4.into();
+        old["projects"][0]["workloads"][0]["kind"] = "command_service".into();
+        old["projects"][0]["workloads"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("compose");
+        let original = serde_json::to_string(&old).unwrap();
+        fs::write(&path, &original).unwrap();
+        let migrated = store.load().unwrap();
+        assert_eq!(migrated.version, 5);
+        assert!(migrated.projects[0].workloads[0].compose.is_none());
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+
     fn config() -> WorkloadConfig {
         WorkloadConfig {
             id: Uuid::new_v4(),
@@ -198,6 +266,7 @@ mod tests {
             readiness: Readiness::default(),
             readiness_timeout_seconds: 60,
             dependencies: Vec::new(),
+            compose: None,
         }
     }
 
@@ -282,7 +351,7 @@ mod tests {
         fs::write(&path, &original).unwrap();
         let store = ProjectStore::new(path.clone());
         let mut migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.version, 5);
         assert_eq!(
             migrated.projects[0].workloads[0].readiness,
             Readiness::ProcessRunning
@@ -324,7 +393,7 @@ mod tests {
         );
         fs::write(&path, &old).unwrap();
         let migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.version, 5);
         assert!(migrated.projects[0].workloads.is_empty());
         assert_eq!(fs::read_to_string(path).unwrap(), old);
     }

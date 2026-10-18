@@ -5,7 +5,7 @@ export struct AppDraft { id: string, name: string, executable: string, arguments
 export struct InstalledRow { name: string, executable: string }
 export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool }
 export struct WindowOptionRow { id: string, title: string, executable: string, assignment: string, available: bool }
-export struct WorkloadDraft { id: string, name: string, one-shot: bool, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int, readiness: int, readiness-endpoint: string, readiness-timeout: int, dependencies: string }
+export struct WorkloadDraft { id: string, name: string, one-shot: bool, compose: bool, compose-file: string, docker-context: string, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int, readiness: int, readiness-endpoint: string, readiness-timeout: int, dependencies: string }
 export struct WorkloadRow { id: string, name: string, kind: string, status: string, detail: string, output: string, error: bool, live: bool, can-start: bool, can-stop: bool }
 
 export component AppTray inherits SystemTrayIcon {
@@ -90,6 +90,7 @@ export component AppWindow inherits Window {
     callback relaunch-project();
     callback close-project();
     callback add-workload(bool);
+    callback add-compose();
     callback remove-workload(int);
     callback browse-workload(int, int);
     callback service-action(string, string);
@@ -345,6 +346,7 @@ export component AppWindow inherits Window {
                             alignment: start;
                             Button { text: "+ Command service"; enabled: root.form-enabled; clicked => { root.add-workload(false); } }
                             Button { text: "+ Startup action"; enabled: root.form-enabled; clicked => { root.add-workload(true); } }
+                            Button { text: "+ Docker Compose"; enabled: root.form-enabled; clicked => { root.add-compose(); } }
                         }
                         for service[index] in root.workloads: Rectangle {
                             background: #f3f6f8;
@@ -356,13 +358,23 @@ export component AppWindow inherits Window {
                                     LineEdit { text <=> service.name; placeholder-text: "Service or action name"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                     Button { text: "Remove"; enabled: root.form-enabled; clicked => { root.remove-workload(index); } }
                                 }
-                                CheckBox { text: "Finite startup action"; checked <=> service.one-shot; enabled: root.form-enabled; toggled => { if self.checked { service.readiness = 0; } root.dirty = true; } }
-                                Text { text: "Start command"; color: #22313d; font-size: 12px; }
+                                if !service.compose: CheckBox { text: "Finite startup action"; checked <=> service.one-shot; enabled: root.form-enabled; toggled => { if self.checked { service.readiness = 0; } root.dirty = true; } }
+                                Text { text: service.compose ? "Docker executable" : "Start command"; color: #22313d; font-size: 12px; }
                                 HorizontalLayout {
                                     LineEdit { text <=> service.executable; placeholder-text: "Full path to the .exe"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                     Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-workload(index, 0); } }
                                 }
-                                LineEdit { text <=> service.arguments; placeholder-text: "Arguments, with Windows quoting"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                if !service.compose: LineEdit { text <=> service.arguments; placeholder-text: "Arguments, with Windows quoting"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                if service.compose: VerticalLayout {
+                                    spacing: 8px;
+                                    Text { text: "Compose file"; color: #22313d; font-size: 12px; }
+                                    HorizontalLayout {
+                                        LineEdit { text <=> service.compose-file; placeholder-text: "Full path to compose.yaml"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                        Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-workload(index, 3); } }
+                                    }
+                                    LineEdit { text <=> service.docker-context; placeholder-text: "Docker context (blank uses the current local context)"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Text { text: "Uses local Docker Desktop with Linux containers. Build custom images first. Stop keeps containers; Close and Relaunch remove stopped containers and keep volumes."; color: #65778d; font-size: 11px; wrap: word-wrap; }
+                                }
                                 Text { text: "Working folder"; color: #22313d; font-size: 12px; }
                                 HorizontalLayout {
                                     LineEdit { text <=> service.folder; placeholder-text: "Blank uses the project folder"; enabled: root.form-enabled; edited => { root.dirty = true; } }
@@ -392,19 +404,22 @@ export component AppWindow inherits Window {
                                   }
                                 }
                                 if root.workloads.length == 1: Text { text: "Add another service or startup action to choose a prerequisite."; font-size: 11px; color: #65778d; wrap: word-wrap; }
-                                Text { text: "Normal stop command (optional)"; color: #22313d; font-size: 12px; }
+                                if !service.compose: VerticalLayout {
+                                  spacing: 8px;
+                                  Text { text: "Normal stop command (optional)"; color: #22313d; font-size: 12px; }
                                 HorizontalLayout {
                                     LineEdit { text <=> service.stop-executable; placeholder-text: "Full .exe path for a normal stop request"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                     Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-workload(index, 2); } }
                                 }
                                 LineEdit { text <=> service.stop-arguments; placeholder-text: "Stop arguments; {folder} uses the session's working folder"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                }
                                 HorizontalLayout {
                                     alignment: start;
                                     Text { text: "Wait up to"; color: #22313d; font-size: 12px; }
                                     SpinBox { value <=> service.stop-timeout; minimum: 1; maximum: 3600; preferred-width: 90px; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                     Text { text: "seconds for normal shutdown"; color: #22313d; font-size: 12px; }
                                 }
-                                Text { text: "Stop leaves the workload running if the command is missing, fails, or times out. Force stop is always explicit."; color: #65778d; font-size: 11px; wrap: word-wrap; }
+                                Text { text: service.compose ? "Stop sends the configured container signal. A timeout leaves containers running. Force stop is always explicit." : "Stop leaves the workload running if the command is missing, fails, or times out. Force stop is always explicit."; color: #65778d; font-size: 11px; wrap: word-wrap; }
                             }
                         }
                         Text { text: "Readiness is checked during startup. A timeout leaves the workload running; Retry checks it again. Configure scripts through an explicit shell."; color: #65778d; font-size: 12px; wrap: word-wrap; }

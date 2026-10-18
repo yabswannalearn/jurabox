@@ -20,8 +20,8 @@ use windows::{
             },
             Pipes::CreatePipe,
             Threading::{
-                CREATE_NO_WINDOW, CreateProcessW, DeleteProcThreadAttributeList,
-                EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+                CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+                DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
                 InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
                 PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW,
@@ -124,6 +124,15 @@ pub struct ManagedProcess {
 
 impl ManagedProcess {
     pub fn start(executable: &Path, arguments: &str, folder: &Path) -> Result<Self> {
+        Self::start_environment(executable, arguments, folder, None)
+    }
+
+    pub fn start_environment(
+        executable: &Path,
+        arguments: &str,
+        folder: &Path,
+        environment: Option<&[u16]>,
+    ) -> Result<Self> {
         ensure!(
             executable.is_file(),
             "Executable does not exist: {}",
@@ -206,8 +215,8 @@ impl ManagedProcess {
                 None,
                 None,
                 BOOL(1),
-                CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
-                None,
+                CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                environment.map(|value| value.as_ptr().cast()),
                 &folder,
                 &startup.StartupInfo,
                 &mut process,
@@ -266,7 +275,8 @@ impl ManagedProcess {
         }
     }
 
-    /// Called only by an explicit Force stop action (or owned diagnostic cleanup).
+    /// Force an owned command job. Workload termination requires explicit Force
+    /// stop; internal read-only Docker log clients can also be cancelled on cleanup.
     pub fn force_stop(&self) -> Result<()> {
         // SAFETY: This handle can refer only to the job created for this workload.
         unsafe {

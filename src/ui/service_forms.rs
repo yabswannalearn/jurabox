@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    projects::{CommandSpec, Readiness, WorkloadConfig, WorkloadKind},
+    projects::{CommandSpec, ComposeConfig, Readiness, WorkloadConfig, WorkloadKind},
     services::Action,
 };
 use slint::Model;
@@ -14,6 +14,19 @@ pub(super) fn load(window: &AppWindow, project: Option<&Project>) {
             id: entry.id.to_string().into(),
             name: entry.name.clone().into(),
             one_shot: entry.kind == WorkloadKind::StartupAction,
+            compose: entry.kind == WorkloadKind::DockerCompose,
+            compose_file: entry
+                .compose
+                .as_ref()
+                .map(|value| value.file.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .into(),
+            docker_context: entry
+                .compose
+                .as_ref()
+                .map(|value| value.context.clone())
+                .unwrap_or_default()
+                .into(),
             executable: entry.start.executable.to_string_lossy().into_owned().into(),
             arguments: entry.start.arguments.clone().into(),
             folder: entry
@@ -72,7 +85,7 @@ pub(super) fn read(window: &AppWindow, project: &mut Project) -> Result<()> {
             Ok(WorkloadConfig {
                 id: Uuid::parse_str(&row.id)?,
                 name: row.name.trim().into(),
-                kind: if row.one_shot {
+                kind: if row.compose { WorkloadKind::DockerCompose } else if row.one_shot {
                     WorkloadKind::StartupAction
                 } else {
                     WorkloadKind::CommandService
@@ -92,6 +105,7 @@ pub(super) fn read(window: &AppWindow, project: &mut Project) -> Result<()> {
                 },
                 readiness_timeout_seconds: row.readiness_timeout as u32,
                 dependencies: row.dependencies.split_whitespace().map(Uuid::parse_str).collect::<std::result::Result<_, _>>()?,
+                compose: row.compose.then(|| ComposeConfig { file: row.compose_file.trim().into(), context: row.docker_context.trim().into() }),
             })
         })
         .collect::<Result<_>>()?;
@@ -99,7 +113,13 @@ pub(super) fn read(window: &AppWindow, project: &mut Project) -> Result<()> {
 }
 
 pub(super) fn refresh_runtime(window: &AppWindow, state: &State) {
-    window.set_managed_live(state.workspace.workloads.iter().any(|(_, view)| view.live));
+    window.set_managed_live(
+        state
+            .workspace
+            .workloads
+            .iter()
+            .any(|(_, view)| view.live || view.retained),
+    );
     let rows: Vec<_> = state
         .workspace
         .workloads
@@ -126,6 +146,33 @@ fn editable(window: &AppWindow) -> bool {
 }
 
 pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
+    let weak = window.as_weak();
+    window.on_add_compose(move || {
+        if let Some(window) = weak.upgrade()
+            && editable(&window)
+        {
+            let executable = std::env::var_os("ProgramFiles")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join("Docker/Docker/resources/bin/docker.exe");
+            let mut rows: Vec<_> = window.get_workloads().iter().collect();
+            rows.push(WorkloadDraft {
+                id: Uuid::new_v4().to_string().into(),
+                name: "Docker Compose".into(),
+                compose: true,
+                executable: if executable.is_file() {
+                    executable.to_string_lossy().into_owned().into()
+                } else {
+                    "".into()
+                },
+                stop_timeout: 10,
+                readiness_timeout: 60,
+                ..Default::default()
+            });
+            window.set_workloads(ModelRc::new(VecModel::from(rows)));
+            window.set_dirty(true);
+        }
+    });
     window.on_has_dependency(|values, id| {
         values.split_whitespace().any(|value| value == id.as_str())
     });
@@ -214,6 +261,7 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
                             0 => row.executable = path,
                             1 => row.folder = path,
                             2 => row.stop_executable = path,
+                            3 => row.compose_file = path,
                             _ => return,
                         }
                         window.set_workloads(ModelRc::new(VecModel::from(rows)));
