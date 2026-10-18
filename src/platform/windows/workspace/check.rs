@@ -257,7 +257,7 @@ pub(super) fn run() -> Result<()> {
         "Deleted desktop recovery duplicated the app or retained the lost desktop."
     );
     println!("PASS external desktop switches and deleted-desktop recreation preserve live apps");
-    workspaces.close(project.id);
+    workspaces.close(project.id)?;
     ensure!(
         replacement.is_alive() && !workspaces.summary().open.contains(&project.id),
         "Close killed an app or retained the session."

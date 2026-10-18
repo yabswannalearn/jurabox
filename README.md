@@ -20,9 +20,15 @@ Use **Find installed app** to search Windows App Paths and common tools, or **Cu
 
 The browser option opens configured HTTP(S) links in a new Chrome or Edge window using the existing profile. **Shared app** explicitly permits reuse of one matching existing window and moves it with the active project. Multiple matching windows are reported as ambiguous. Otherwise, only a unique new window matching the executable is assigned. If an app delegates to another executable, takes longer than five seconds, or reuses a previous window, it may launch without assignment: check it before explicitly relaunching. Packaged apps, terminal hosts, and application-specific adapters still need pilot validation.
 
-Live sessions currently last only while Jurabox runs. Reopening Jurabox restores saved settings, but does not reconnect to surviving app windows or desktops yet. Service management, live inactivity timers, and session recovery remain later phases; the saved inactivity setting does not yet stop processes.
+Live sessions currently last only while Jurabox runs. Reopening Jurabox restores saved settings, but does not reconnect to surviving app windows or workloads yet. Command services and startup actions are available in this development slice; Compose, health probes/dependencies, live inactivity timers, and recovery remain later work. The saved inactivity setting does not yet stop processes.
 
 For an open project, **Workspace windows** shows the apps from its session setup. Use **Assign open window** or **Change window** to search accessible windows by title or executable path, then choose **Use window**. This also supports apps whose launcher and visible window belong to different executables. Assignment takes effect immediately and leaves launch settings unchanged. **Unassign** leaves the app open. Windows privately assigned to another entry are unavailable; enable Shared app in both saved setups and relaunch to link one window across sessions.
+
+Under **Services and startup actions**, add a foreground command service or a finite startup action. Choose an executable and arguments, and set a working folder or use the project's folder. Commands run without an interactive terminal, inherit your environment, and support `{folder}` in arguments. Entries start independently in this slice. Run scripts through an explicitly configured shell. A completed startup action is successful work; an exited long-running service is reported as a failure. Detached container workloads need the later Compose integration.
+
+**Session services** shows status and recent output, retaining 64 KiB per command stream. **Start/Retry** uses the session setup and avoids duplicating a live workload, including child processes that survive their launcher. **Stop** runs the configured normal-stop command with a default 10-second deadline. A missing/failed stop command or timeout leaves the workload managed and running. **Force stop** explicitly terminates that workload and its owned children. Close and relaunch pause on stop failures; saving a different stop command does not change the current session's instructions.
+
+Choose **Stop services and quit** in File or the tray menu to shut down managed workloads and exit. Any stop failure keeps Jurabox open. Ordinary Quit is guarded while jobs are live in this slice; a leave-running exit needs the later durable-output/reconnection work. Closing the window still hides it to the tray. Output is in memory and is not preserved after quitting. Settings versions 1 and 2 migrate to version 3 in memory and are rewritten only on Save.
 
 To start with only a tray icon:
 
@@ -63,6 +69,8 @@ cargo test
 cargo run -- ui-check
 cargo run -- workspace-check --exercise
 cargo run -- assignment-check --exercise
+cargo run -- service-check --exercise
+cargo run -- service-ui-check --exercise
 ```
 
 Unit tests do not open windows or switch desktops. The live UI check uses temporary settings, exercises project/app/link forms and save/error/tray flows, and writes screenshots to `target/ui-check/`. The workspace exercise launches separate Jurabox test processes, verifies assignment, shared movement, session semantics, desktop deletion/recreation, and partial failure. It restores the original desktops and closes only its test windows. The live checks require an unlocked interactive Windows session.
@@ -70,6 +78,8 @@ Unit tests do not open windows or switch desktops. The live UI check uses tempor
 To include an installed Chrome/Edge browser in the workspace exercise, set `JURABOX_CHECK_BROWSER` to its full executable path for that command. The check serves two temporary loopback HTTP pages, verifies the new browser window and reuse, and closes that window during cleanup. It uses the existing browser profile. This optional check passed with Edge 155.0.4283.45 on the development host.
 
 The assignment exercise opens a temporary project and private test-app copy, checks the real picker callbacks, search keyboard focus, assignment/relaunch/unassign, cancellation during discovery, and closed-window refresh. It restores the original desktops and closes its own fixture. The workspace exercise also checks assignment and private/shared conflict rules. Set `JURABOX_CHECK_CONSOLE=1` to include a real CMD/terminal-host window; that fixture command exits by itself after 20 seconds and only a newly created, uniquely titled window can be selected by the exercise.
+
+The service exercises use private temporary settings/folders and finite diagnostic commands, with no process-name or port-based selection. They check startup/exit semantics, output limits, normal-stop failures, duplicate prevention, and explicit owned-job Force stop. The UI exercise also creates one uniquely named project desktop and restores the original desktops. Its fixtures exit after at most 60 seconds if interrupted; successful checks clean them up immediately. Service checks require an interactive Windows 11 host.
 
 ## Design documents
 
@@ -79,4 +89,5 @@ The assignment exercise opens a temporary project and private test-app copy, che
 - [Windows desktop architecture](docs/adr/0001-use-windows-virtual-desktops.md)
 - [Rust application architecture](docs/adr/0002-rust-application-with-platform-modules.md)
 - [App launching and session snapshots](docs/adr/0003-launch-apps-with-session-snapshots.md)
+- [Owned foreground command workloads](docs/adr/0004-own-foreground-command-workloads.md)
 - [Implementation progress and validation](docs/PROGRESS.md)

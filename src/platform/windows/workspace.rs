@@ -3,6 +3,7 @@ use super::{
     apps, current_id, vd,
 };
 use crate::projects::{AppConfig, Project};
+use crate::services::{self, Services};
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     collections::HashMap,
@@ -29,6 +30,7 @@ pub struct Summary {
     pub message: String,
     pub error: bool,
     pub apps: Vec<SessionApp>,
+    pub workloads: Vec<(Uuid, services::View)>,
 }
 
 struct Entry {
@@ -40,6 +42,7 @@ struct Session {
     setup: Project,
     desktop: Option<GUID>,
     entries: Vec<Entry>,
+    services: Services,
 }
 
 #[derive(Default)]
@@ -74,12 +77,76 @@ impl Workspaces {
                     })
                 })
                 .collect(),
+            workloads: self.service_views(),
             ..Default::default()
         }
     }
 
-    pub fn close(&mut self, id: Uuid) {
+    pub fn close(&mut self, id: Uuid) -> Result<String> {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session
+                .services
+                .stop_all()
+                .context("Session remains open because managed workloads have not stopped.")?;
+        }
         self.sessions.remove(&id);
+        Ok("Session closed. Managed workloads stopped; app windows and desktop stay open.".into())
+    }
+
+    pub fn service_activity(&self) -> bool {
+        self.sessions
+            .values()
+            .any(|session| session.services.activity())
+    }
+
+    pub fn poll_services(&mut self) -> Vec<(Uuid, services::View)> {
+        for session in self.sessions.values_mut() {
+            session.services.poll();
+        }
+        self.service_views()
+    }
+
+    fn service_views(&self) -> Vec<(Uuid, services::View)> {
+        let mut result: Vec<_> = self
+            .sessions
+            .iter()
+            .flat_map(|(id, session)| session.services.views().into_iter().map(|view| (*id, view)))
+            .collect();
+        result.sort_by_key(|(project, _)| *project);
+        result
+    }
+
+    pub fn service_action(
+        &mut self,
+        project: Uuid,
+        service: Uuid,
+        action: services::Action,
+    ) -> Result<String> {
+        self.sessions
+            .get_mut(&project)
+            .context("Open the project before controlling a service.")?
+            .services
+            .act(service, action)
+    }
+
+    pub fn stop_for_exit(&mut self) -> Result<()> {
+        let errors: Vec<_> = self
+            .sessions
+            .values_mut()
+            .filter_map(|session| {
+                session
+                    .services
+                    .stop_all()
+                    .err()
+                    .map(|error| format!("{}: {error:#}", session.setup.name))
+            })
+            .collect();
+        ensure!(
+            errors.is_empty(),
+            "Jurabox remains open because some managed workloads could not stop.\n{}",
+            errors.join("\n")
+        );
+        Ok(())
     }
 
     pub fn open(&mut self, project: Project, relaunch: bool) -> Result<String> {
@@ -92,9 +159,17 @@ impl Workspaces {
                 setup: project.clone(),
                 desktop: None,
                 entries: Vec::new(),
+                services: Services::default(),
             });
         // Always retain the session, including partial launches and integration failures.
-        let result = self.activate(&project, &mut session, !existing || relaunch);
+        let result = (|| {
+            if existing && relaunch {
+                session.services.stop_all().context(
+                    "Relaunch paused. Resolve the old session's stop failure, then relaunch again.",
+                )?;
+            }
+            self.activate(&project, &mut session, !existing || relaunch)
+        })();
         self.sessions.insert(project.id, session);
         result
     }
@@ -106,9 +181,15 @@ impl Workspaces {
         launch: bool,
     ) -> Result<String> {
         let mut problems = Vec::new();
-        let desktop = match desktop_for(session.desktop, &project.name) {
-            Ok(desktop) => {
-                session.desktop = Some(vd(desktop.get_id())?);
+        if launch {
+            session.services = Services::new(project)?;
+            problems.extend(session.services.start_all());
+        }
+        let desktop = match desktop_for(session.desktop, &project.name)
+            .and_then(|desktop| Ok((desktop, vd(desktop.get_id())?)))
+        {
+            Ok((desktop, id)) => {
+                session.desktop = Some(id);
                 if let Err(error) = vd(winvd::switch_desktop(desktop)) {
                     problems.push(format!("Desktop switch failed: {error:#}"));
                 }

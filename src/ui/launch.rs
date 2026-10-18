@@ -16,6 +16,9 @@ pub(super) enum Request {
     Windows(Uuid, Uuid, Uuid),
     Assign(Uuid, Uuid),
     Unassign(Uuid, Uuid),
+    Service(Uuid, Uuid, crate::services::Action),
+    Poll,
+    StopAndQuit,
 }
 
 impl From<winvd::DesktopEvent> for Request {
@@ -52,6 +55,7 @@ pub(super) fn refresh_status(window: &AppWindow, state: &State) {
         })
         .collect();
     window.set_session_apps(ModelRc::new(VecModel::from(apps)));
+    service_forms::refresh_runtime(window, state);
 }
 
 pub(super) fn read_apps(window: &AppWindow, project: &mut Project) -> Result<()> {
@@ -102,7 +106,7 @@ fn add_app(window: &AppWindow, name: String, executable: String) {
     set_apps(window, apps);
 }
 
-fn pick(window: &AppWindow, folder: bool) -> Result<Option<PathBuf>> {
+pub(super) fn pick(window: &AppWindow, folder: bool) -> Result<Option<PathBuf>> {
     let handle = window.window().window_handle();
     let RawWindowHandle::Win32(handle) = handle.window_handle()?.as_raw() else {
         anyhow::bail!("A Windows window handle is required.");
@@ -125,9 +129,23 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
         }
         let mut workspaces = Workspaces::default();
         let mut choices: Option<(Uuid, crate::platform::workspace::WindowChoices)> = None;
-        for request in receiver {
+        let mut last_workloads = Vec::new();
+        loop {
+            let request = if workspaces.service_activity() {
+                match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+                    Ok(request) => request,
+                    Err(mpsc::RecvTimeoutError::Timeout) => Request::Poll,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match receiver.recv() {
+                    Ok(request) => request,
+                    Err(_) => break,
+                }
+            };
             let mut summary;
             let mut picker_completion = None;
+            let mut quit = false;
             let completed = match request {
                 Request::Open(project, relaunch) => {
                     let result = workspaces.open(project, relaunch);
@@ -142,10 +160,56 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
                     true
                 }
                 Request::Close(id) => {
-                    workspaces.close(id);
+                    let result = workspaces.close(id);
                     summary = workspaces.summary();
-                    summary.message = "Session closed. App windows and desktop stay open.".into();
+                    match result {
+                        Ok(message) => summary.message = message,
+                        Err(error) => {
+                            summary.message = format!("{error:#}");
+                            summary.error = true;
+                        }
+                    }
                     true
+                }
+                Request::Service(project, service, action) => {
+                    let result = workspaces.service_action(project, service, action);
+                    summary = workspaces.summary();
+                    match result {
+                        Ok(message) => summary.message = message,
+                        Err(error) => {
+                            summary.message = format!("{error:#}");
+                            summary.error = true;
+                        }
+                    }
+                    true
+                }
+                Request::StopAndQuit => {
+                    let result = workspaces.stop_for_exit();
+                    summary = workspaces.summary();
+                    match result {
+                        Ok(()) => {
+                            quit = true;
+                            summary.message = "Managed workloads stopped.".into();
+                        }
+                        Err(error) => {
+                            summary.message = format!("{error:#}");
+                            summary.error = true;
+                        }
+                    }
+                    true
+                }
+                Request::Poll => {
+                    let workloads = workspaces.poll_services();
+                    if workloads != last_workloads {
+                        last_workloads = workloads.clone();
+                        let state = worker_state.clone();
+                        let _ = weak.upgrade_in_event_loop(move |window| {
+                            let mut state = state.lock().unwrap();
+                            state.workspace.workloads = workloads;
+                            service_forms::refresh_runtime(&window, &state);
+                        });
+                    }
+                    continue;
                 }
                 Request::Windows(ticket, project, app) => {
                     let result = match workspaces.window_choices(project, app) {
@@ -210,6 +274,7 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
                     false
                 }
             };
+            last_workloads = summary.workloads.clone();
             let state = worker_state.clone();
             let _ = weak.upgrade_in_event_loop(move |window| {
                 if completed {
@@ -223,6 +288,17 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
                 refresh_status(&window, &state);
                 if !state.workspace.message.is_empty() {
                     notice(&window, &state.workspace.message, state.workspace.error);
+                }
+                if quit {
+                    if window.get_dirty() {
+                        notice(
+                            &window,
+                            "Services stopped. Save or discard your changes before quitting.",
+                            true,
+                        );
+                    } else {
+                        let _ = slint::quit_event_loop();
+                    }
                 }
             });
         }

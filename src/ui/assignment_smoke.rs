@@ -8,7 +8,7 @@ fn vd<T>(result: winvd::Result<T>) -> Result<T> {
     result.map_err(|error| anyhow::anyhow!("Desktop API: {error:?}"))
 }
 
-struct Desktops {
+pub(super) struct Desktops {
     original: winvd::Desktop,
     original_ids: Vec<GUID>,
     name: String,
@@ -17,7 +17,7 @@ struct Desktops {
 }
 
 impl Desktops {
-    fn new(name: String) -> Result<Self> {
+    pub(super) fn new(name: String) -> Result<Self> {
         Ok(Self {
             original: vd(winvd::get_current_desktop())?,
             original_ids: vd(winvd::get_desktops())?
@@ -29,7 +29,7 @@ impl Desktops {
             restored: false,
         })
     }
-    fn restore(&mut self) -> Result<()> {
+    pub(super) fn restore(&mut self) -> Result<()> {
         vd(winvd::switch_desktop(self.original))?;
         for desktop in vd(winvd::get_desktops())? {
             let id = vd(desktop.get_id())?;

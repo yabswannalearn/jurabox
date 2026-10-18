@@ -4,7 +4,7 @@ Last updated: 2026-10-18 (Asia/Shanghai).
 
 Repository: [yabswannalearn/jurabox](https://github.com/yabswannalearn/jurabox). The user selected this repository for the project on 2026-10-17.
 
-Status: product decisions accepted. The user accepted all recommendations Q01-Q28 in the [design decision record](DESIGN-QUESTIONS.md) and authorized starting development on 2026-10-18. The basic desktop exercise and initial project-management/tray UI pass their checks on the development host. App/link launching and Open/Switch actions are next; real app compatibility and later service/lifecycle features remain in progress. See [implementation progress](PROGRESS.md) for executed checks and remaining work.
+Status: product decisions accepted. The user accepted all recommendations Q01-Q28 in the [design decision record](DESIGN-QUESTIONS.md) and authorized starting development on 2026-10-18. Desktop integration, project configuration, app/link launching, switching, and manual window assignment are merged into main. The command-service/startup-action slice of milestone 3 is in development; real app compatibility, advanced service coordination, and lifecycle features remain in progress. See [implementation progress](PROGRESS.md) for executed checks and remaining work.
 
 Terminology: [domain glossary](../CONTEXT.md). Architecture: [Windows desktops](adr/0001-use-windows-virtual-desktops.md) and [Rust application with separate platform integration](adr/0002-rust-application-with-platform-modules.md).
 
@@ -260,6 +260,8 @@ Planned development milestones:
 5. Validate the complete personal pilot before broader distribution.
 
 The milestone 1 desktop compatibility tool passes its basic exercise. Milestone 2 now includes app/link configuration, executable/window matching, Open/Switch, deliberate relaunch, shared windows, session close, and explicit window assignment/unassignment. The chooser supports differing launcher and host executables, rejects stale identities, and protects private assignments across sessions. Runtime associations are in memory. App-specific launch adapters, the full installed-app pilot, and recovery remain follow-up work. Later service and lifecycle milestones remain planned. See [PROGRESS.md](PROGRESS.md) for executed validation.
+
+Milestone 3 starts with owned foreground command services and startup actions, recent output, manual Start/Retry, configured normal Stop, explicit Force stop, and Close/Relaunch/Stop-and-quit integration. Compose, dependency scheduling, TCP/HTTP readiness, environment overrides, and durable leave-running/reconnection support follow. The initial slice guards Quit while jobs are live because its in-memory pipe capture is not a durable supervisor. The [workload ADR](adr/0004-own-foreground-command-workloads.md) records that temporary boundary; the accepted leave-running exit remains required.
 
 ## Technical validation still required
 
