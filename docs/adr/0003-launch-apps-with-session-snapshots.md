@@ -1,0 +1,19 @@
+---
+status: accepted
+---
+
+# Launch app windows with an explicit session setup
+
+An open project retains a copy of its saved setup. Switch does not launch apps or apply later configuration edits. Deliberate relaunch uses the latest saved setup, reuses unchanged verified windows, and leaves removed or replaced windows open. Closing a session releases its associations without terminating apps or deleting desktops. Persistence of these associations across Jurabox restarts belongs to the recovery milestone.
+
+Use a single workspace worker in the Rust process. Desktop notifications and UI requests are serialized there; slow startup and bounded window discovery stay off the UI thread. An idle worker waits for events rather than scanning windows continuously.
+
+For ordinary app entries, launch an explicit executable with configured arguments and an optional project working folder. The initial browser integration uses a new Chrome/Edge window and configured HTTP(S) links with the existing browser profile. Interactive console entries use Windows `CreateProcessW` with fresh console handles; inheriting or redirecting the tray process's standard streams would not provide the intended terminal interaction. See [Microsoft's process creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags).
+
+Window attribution checks the full executable path and newly appearing application windows, retaining the window handle, process ID, thread ID, and process creation time. Shared reuse is explicitly enabled in the saved app entry and requires one matching existing window. Multiple candidates or no attributable window produce a visible error; ordinary entries do not take over a pre-existing window. These checks reduce accidental assignment and process-ID reuse errors; they do not establish service ownership or prove general compatibility with brokered, elevated, packaged, or multi-window applications. The five-second discovery deadline is a bounded observation, not proof that an app failed to launch.
+
+An app that delegates to another executable, or creates no unique window, can remain running without assignment. Report this outcome and preserve successful apps. Do not automatically retry unknown launches. Switching alone never opens another instance. Explicit relaunch can request another window, so the user is told to check an unassigned app before relaunching. Manual window selection and app-specific adapters remain follow-up compatibility work.
+
+Explorer may register a new application window after it first becomes enumerable. Retain the discovered window identity before attempting movement and allow up to two seconds for initial desktop assignment. A movement failure retains the association for later explicit switching instead of losing track of the launched app. Warm switching has no startup polling delay.
+
+Project settings use schema version 2 for app/browser entries. Version 1 loads with empty launch entries and migrates in memory; the file changes only on a deliberate Save. Reject unknown fields and unsupported versions to avoid silently deleting configuration.

@@ -99,6 +99,17 @@ pub fn run() -> Result<()> {
                     ensure!(window.get_project_name() == "Jurabox" && window.get_dirty(), "keyboard editing did not update the form and dirty state");
                     window.set_project_folder(folder.to_string_lossy().into_owned().into());
                     window.set_auto_stop_minutes(20);
+                    window.invoke_add_app();
+                    let apps = window.get_apps();
+                    let mut app = apps.row_data(0).context("Add app did not create a form row")?;
+                    app.name = "Test app".into();
+                    app.executable = std::env::current_exe()?.to_string_lossy().into_owned().into();
+                    app.arguments = "_probe-window".into();
+                    app.shared = true;
+                    apps.set_row_data(0, app);
+                    window.set_browser_enabled(true);
+                    window.set_browser_executable(r"C:\Apps\chrome.exe".into());
+                    window.set_browser_urls("https://example.com/\nhttps://example.org/".into());
                     window.set_dirty(true);
                     window.invoke_save_project();
                 }
@@ -107,6 +118,7 @@ pub fn run() -> Result<()> {
                     ensure!(data.projects.len() == 1, "new project was not saved");
                     ensure!(!window.get_notice_error(), "save failed: {}", window.get_notice());
                     original_id = Some(data.projects[0].id);
+                    ensure!(data.projects[0].apps.len() == 1 && data.projects[0].apps[0].shared && data.projects[0].browser.as_ref().unwrap().urls.len() == 2, "App or browser configuration did not persist");
                     window.set_project_name("Jurabox — desktop manager".into());
                     window.set_dirty(true);
                     window.invoke_save_project();
@@ -115,6 +127,7 @@ pub fn run() -> Result<()> {
                     let data = read()?;
                     ensure!(data.projects.len() == 1 && Some(data.projects[0].id) == original_id, "renaming changed project identity");
                     ensure!(data.projects[0].name == "Jurabox — desktop manager", "rename did not persist");
+                    ensure!(data.projects[0].apps.len() == 1 && window.get_apps().row_count() == 1, "Saving unrelated fields lost the app setup");
                     window.invoke_new_project();
                     window.set_project_name("Research notes".into());
                     window.set_auto_stop_enabled(false);
@@ -132,7 +145,8 @@ pub fn run() -> Result<()> {
                     ensure!(window.get_selected_index() == 0 && window.get_dirty(), "selection discarded an unsaved edit");
                     window.invoke_discard_changes();
                     ensure!(window.get_project_name() == "Jurabox — desktop manager", "discard did not restore saved settings");
-                    println!("PASS create, rename, local reload, folderless project, Off policy, and unsaved-edit protection");
+                    ensure!(!window.get_session_open(), "Selecting a saved project launched a session");
+                    println!("PASS create, rename, local reload, app/link form persistence, folderless project, Off policy, unsaved-edit protection, and selection does not launch");
                 }
                 4 => {
                     ensure!(window.get_projects().row_count() == 2, "sidebar did not refresh");
@@ -186,6 +200,23 @@ pub fn run() -> Result<()> {
                     ensure!(read()?.projects[0].name == "Jurabox — desktop manager", "failed save changed saved settings");
                     window.invoke_discard_changes();
                     println!("PASS deletion preserves files; failed save preserves saved data and the unsaved draft");
+                    // Layout fixture only: the separate workspace exercise checks
+                    // real sessions. Ensure all session controls fit the compact rail.
+                    window.set_session_open(true);
+                    window.set_active_workspace("Active: layout fixture".into());
+                }
+                11 => {
+                    snapshot(&window, &artifacts.join("session-controls.png"))?;
+                    window.set_session_open(false);
+                    window.set_active_workspace("No project active".into());
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -240. })?;
+                }
+                12 => {
+                    snapshot(&window, &artifacts.join("apps-scrolled.png"))?;
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -400. })?;
+                }
+                13 => {
+                    snapshot(&window, &artifacts.join("browser-scrolled.png"))?;
                     window.invoke_quit();
                     return Ok(true);
                 }

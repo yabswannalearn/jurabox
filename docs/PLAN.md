@@ -222,7 +222,7 @@ Begin as one Rust application with separate modules for project rules, session/s
 | Interface | Slint 1.18.1 for the initial native-rendered management UI; pilot and release validation ongoing |
 | Documented Windows integration | Microsoft's windows crate is a candidate |
 | Full virtual desktop integration | winvd 0.0.49 for the initial desktop slice; basic operations validated on build 26200.9711, real app compatibility pending |
-| App and script launching | Rust process APIs are a candidate |
+| App and script launching | Explicit executables through Rust process APIs; native Windows console creation for interactive shells; shell scripts require a configured shell |
 | Process tracking | Windows Job Objects where suitable; not the universal ownership mechanism |
 | Settings/session persistence | Versioned local JSON for saved project settings; runtime ownership/session persistence and recovery remain to be designed |
 | macOS and Linux | Later platform integrations; none implemented for the initial Windows release |
@@ -259,7 +259,7 @@ Planned development milestones:
 4. Add inactivity policies, Keep running, graceful reactivation, persistence, reconnection, and crash recovery.
 5. Validate the complete personal pilot before broader distribution.
 
-The milestone 1 desktop compatibility tool passes its basic exercise. Milestone 2 has started with project configuration and tray controls; app/link launching and Open/Switch actions remain next. Later service and lifecycle milestones remain planned.
+The milestone 1 desktop compatibility tool passes its basic exercise. Milestone 2 now includes app/link configuration, initial executable/window matching, Open/Switch, deliberate relaunch, shared windows, and session close. Runtime associations are in memory. Manual window selection, app-specific adapters, the full installed-app pilot, and recovery remain follow-up work. Later service and lifecycle milestones remain planned. See [PROGRESS.md](PROGRESS.md) for executed validation.
 
 ## Technical validation still required
 

@@ -1,3 +1,5 @@
+#[cfg(windows)]
+mod launch;
 mod smoke;
 
 use crate::projects::{Project, ProjectFile, ProjectStore};
@@ -15,6 +17,10 @@ struct State {
     data: ProjectFile,
     selected: Option<Uuid>,
     store: Arc<ProjectStore>,
+    #[cfg(windows)]
+    workspace: crate::platform::workspace::Summary,
+    #[cfg(windows)]
+    launcher: Option<std::sync::mpsc::Sender<launch::Request>>,
 }
 
 fn notice(window: &AppWindow, message: &str, error: bool) {
@@ -58,14 +64,51 @@ fn refresh(window: &AppWindow, state: &State) {
         );
         window.set_auto_stop_enabled(project.inactivity_minutes.is_some());
         window.set_auto_stop_minutes(project.inactivity_minutes.unwrap_or(15) as i32);
+        let apps: Vec<_> = project
+            .apps
+            .iter()
+            .map(|app| AppDraft {
+                id: app.id.to_string().into(),
+                name: app.name.clone().into(),
+                executable: app.executable.to_string_lossy().into_owned().into(),
+                arguments: app.arguments.clone().into(),
+                new_console: app.new_console,
+                shared: app.shared,
+            })
+            .collect();
+        window.set_apps(ModelRc::new(VecModel::from(apps)));
+        window.set_browser_enabled(project.browser.is_some());
+        window.set_browser_executable(
+            project
+                .browser
+                .as_ref()
+                .map(|browser| browser.executable.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .into(),
+        );
+        window.set_browser_urls(
+            project
+                .browser
+                .as_ref()
+                .map(|browser| browser.urls.join("\n"))
+                .unwrap_or_default()
+                .into(),
+        );
     } else {
         window.set_project_name("".into());
         window.set_project_folder("".into());
         window.set_auto_stop_enabled(true);
         window.set_auto_stop_minutes(15);
+        window.set_apps(ModelRc::new(VecModel::from(Vec::<AppDraft>::new())));
+        window.set_browser_enabled(false);
+        window.set_browser_executable("".into());
+        window.set_browser_urls("".into());
     }
     window.set_dirty(false);
     window.set_delete_pending(false);
+    window.set_picker_visible(false);
+    #[cfg(windows)]
+    launch::refresh_status(window, state);
 }
 
 fn can_leave_form(window: &AppWindow) -> bool {
@@ -124,11 +167,11 @@ pub(super) fn show(window: &AppWindow) {
 }
 
 fn request_quit(window: &AppWindow) {
-    if window.get_busy() {
+    if window.get_busy() || window.get_workspace_busy() {
         show(window);
         notice(
             window,
-            "Wait for the current save to finish before quitting.",
+            "Wait for the current operation to finish before quitting.",
             true,
         );
     } else if can_leave_form(window) {
@@ -145,10 +188,16 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
         data,
         selected,
         store: Arc::new(store),
+        #[cfg(windows)]
+        workspace: Default::default(),
+        #[cfg(windows)]
+        launcher: None,
     }));
     let window = AppWindow::new().context("Cannot create the Jurabox window.")?;
     let tray = AppTray::new().context("Cannot create the Jurabox tray icon.")?;
     refresh(&window, &state.lock().unwrap());
+    #[cfg(windows)]
+    launch::setup(&window, state.clone());
 
     let weak = window.as_weak();
     let selected_state = state.clone();
@@ -209,7 +258,7 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
         let minutes = window
             .get_auto_stop_enabled()
             .then_some(window.get_auto_stop_minutes() as u32);
-        let project = match Project::from_form(
+        let mut project = match Project::from_form(
             state.selected,
             window.get_project_name().as_str(),
             window.get_project_folder().as_str(),
@@ -221,6 +270,11 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
                 return;
             }
         };
+        #[cfg(windows)]
+        if let Err(error) = launch::read_apps(&window, &mut project) {
+            notice(&window, &format!("{error:#}"), true);
+            return;
+        }
         let id = project.id;
         let mut next = state.data.clone();
         next.upsert(project);
@@ -247,6 +301,15 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
         let Some(id) = state.selected else {
             return;
         };
+        #[cfg(windows)]
+        if state.workspace.open.contains(&id) || window.get_workspace_busy() {
+            notice(
+                &window,
+                "Close the project session before deleting its setup.",
+                true,
+            );
+            return;
+        }
         let mut next = state.data.clone();
         next.remove(id);
         let selection = next.projects.first().map(|project| project.id);

@@ -1,6 +1,21 @@
+mod app_windows;
+pub mod apps;
 mod instance;
 mod probe_window;
+pub mod workspace;
 pub use instance::ManagerInstance;
+
+pub fn probe_window() -> anyhow::Result<()> {
+    let window = probe_window::ProbeWindow::create()?;
+    while window.is_alive() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+pub fn workspace_check() -> anyhow::Result<()> {
+    workspace::check()
+}
 
 pub fn activate_management_window(window: &slint::Window) -> anyhow::Result<()> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
