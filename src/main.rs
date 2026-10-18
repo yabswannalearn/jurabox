@@ -12,6 +12,7 @@ enum Command {
     DesktopCheck,
     UiCheck,
     WorkspaceCheck,
+    AssignmentCheck,
     ProbeWindow,
     Help,
 }
@@ -28,10 +29,11 @@ fn parse_command(args: &[String]) -> Result<Command> {
         ["status"] => Ok(Command::Status),
         ["ui-check"] => Ok(Command::UiCheck),
         ["workspace-check", "--exercise"] => Ok(Command::WorkspaceCheck),
+        ["assignment-check", "--exercise"] => Ok(Command::AssignmentCheck),
         ["_probe-window"] => Ok(Command::ProbeWindow),
         ["desktop-check", "--exercise"] => Ok(Command::DesktopCheck),
         ["--help"] | ["-h"] | ["help"] => Ok(Command::Help),
-        ["desktop-check"] | ["workspace-check"] => bail!(
+        ["desktop-check"] | ["workspace-check"] | ["assignment-check"] => bail!(
             "This check requires --exercise: it temporarily switches desktops and opens test windows"
         ),
         _ => bail!("unknown command; run jurabox --help for usage"),
@@ -46,6 +48,7 @@ fn run() -> Result<()> {
         Command::DesktopCheck => platform::desktop_check(),
         Command::UiCheck => ui::check(),
         Command::WorkspaceCheck => platform::workspace_check(),
+        Command::AssignmentCheck => ui::assignment_check(),
         Command::ProbeWindow => platform::probe_window(),
         Command::Help => {
             println!(
@@ -56,6 +59,7 @@ fn run() -> Result<()> {
                  jurabox desktop-check --exercise   Verify a temporary desktop and owned test window\n\n\
                  jurabox ui-check                   Check UI using temporary settings\n\n\
                  jurabox workspace-check --exercise Verify app launching and workspace switching\n\n\
+                 jurabox assignment-check --exercise Verify manual window assignment with an owned fixture\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );
@@ -91,6 +95,7 @@ mod tests {
     fn desktop_changes_require_explicit_exercise_flag() {
         assert!(parse_command(&args(&["desktop-check"])).is_err());
         assert!(parse_command(&args(&["workspace-check"])).is_err());
+        assert!(parse_command(&args(&["assignment-check"])).is_err());
         assert_eq!(
             parse_command(&args(&["workspace-check", "--exercise"])).unwrap(),
             Command::WorkspaceCheck

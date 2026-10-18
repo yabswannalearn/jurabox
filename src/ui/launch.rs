@@ -13,6 +13,9 @@ pub(super) enum Request {
     Open(Project, bool),
     Close(Uuid),
     Desktop(winvd::DesktopEvent),
+    Windows(Uuid, Uuid, Uuid),
+    Assign(Uuid, Uuid),
+    Unassign(Uuid, Uuid),
 }
 
 impl From<winvd::DesktopEvent> for Request {
@@ -34,6 +37,21 @@ pub(super) fn refresh_status(window: &AppWindow, state: &State) {
         .map(|project| format!("Active: {}", project.name))
         .unwrap_or_else(|| "No project active".into());
     window.set_active_workspace(name.into());
+    let apps: Vec<_> = state
+        .workspace
+        .apps
+        .iter()
+        .filter(|entry| Some(entry.project) == state.selected)
+        .map(|entry| SessionAppRow {
+            id: entry.app.to_string().into(),
+            name: entry.name.clone().into(),
+            assigned: entry.title.is_some(),
+            title: entry.title.clone().unwrap_or_default().into(),
+            executable: entry.executable.clone().unwrap_or_default().into(),
+            shared: entry.shared,
+        })
+        .collect();
+    window.set_session_apps(ModelRc::new(VecModel::from(apps)));
 }
 
 pub(super) fn read_apps(window: &AppWindow, project: &mut Project) -> Result<()> {
@@ -106,8 +124,10 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
             let _ = weak.upgrade_in_event_loop(move |window| notice(&window, &message, true));
         }
         let mut workspaces = Workspaces::default();
+        let mut choices: Option<(Uuid, crate::platform::workspace::WindowChoices)> = None;
         for request in receiver {
             let mut summary;
+            let mut picker_completion = None;
             let completed = match request {
                 Request::Open(project, relaunch) => {
                     let result = workspaces.open(project, relaunch);
@@ -125,6 +145,54 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
                     workspaces.close(id);
                     summary = workspaces.summary();
                     summary.message = "Session closed. App windows and desktop stay open.".into();
+                    true
+                }
+                Request::Windows(ticket, project, app) => {
+                    let result = match workspaces.window_choices(project, app) {
+                        Ok(snapshot) => {
+                            let options = snapshot.options.clone();
+                            choices = Some((ticket, snapshot));
+                            Ok(options)
+                        }
+                        Err(error) => {
+                            choices = None;
+                            Err(format!("{error:#}"))
+                        }
+                    };
+                    let state = worker_state.clone();
+                    let _ = weak.upgrade_in_event_loop(move |window| {
+                        window_picker::loaded(&window, &mut state.lock().unwrap(), ticket, result);
+                    });
+                    continue;
+                }
+                Request::Assign(ticket, choice) => {
+                    let result = match choices.as_ref().filter(|(current, _)| *current == ticket) {
+                        Some((_, choices)) => workspaces.assign_choice(choices, choice),
+                        None => Err(anyhow::anyhow!(
+                            "That window list is out of date. Refresh and choose again."
+                        )),
+                    };
+                    picker_completion = Some((ticket, result.is_ok()));
+                    summary = workspaces.summary();
+                    match result {
+                        Ok(message) => summary.message = message,
+                        Err(error) => {
+                            summary.message = format!("{error:#}");
+                            summary.error = true;
+                        }
+                    }
+                    true
+                }
+                Request::Unassign(project, app) => {
+                    let result = workspaces.unassign_window(project, app);
+                    summary = workspaces.summary();
+                    match result {
+                        Ok(message) => summary.message = message,
+                        Err(error) => {
+                            summary.message = format!("{error:#}");
+                            summary.error = true;
+                        }
+                    }
                     true
                 }
                 Request::Desktop(event) => {
@@ -148,6 +216,9 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
                     window.set_workspace_busy(false);
                 }
                 let mut state = state.lock().unwrap();
+                if let Some((ticket, success)) = picker_completion {
+                    window_picker::completed(&window, &mut state, ticket, success, &summary);
+                }
                 state.workspace = summary;
                 refresh_status(&window, &state);
                 if !state.workspace.message.is_empty() {

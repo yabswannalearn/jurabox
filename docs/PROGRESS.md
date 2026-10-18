@@ -130,4 +130,37 @@ The final `cargo run --locked -- ui-check` passed with temporary settings. In ad
 
 Runtime session/desktop/window associations are not yet persisted. After Jurabox restarts, only saved projects are restored; users must not assume surviving windows are reconnected. Manual window selection, brokered/packaged/terminal-host adapters, actual editor/ChatGPT/Docker compatibility, multi-monitor and scaling checks, and broader failure recovery remain open. A launch with no attributable window is reported and never automatically retried; explicit relaunch may request another window.
 
-Next workspace follow-up: manual window assignment and pilot checks for editor, ChatGPT, Docker Desktop, and terminal-host behavior. Then build typed services and startup actions, bounded output, readiness and dependencies, graceful shutdown, Retry, and explicit Force stop. Real inactivity timers, Keep running, lock/sleep handling, and verified recovery follow service ownership. No app in this slice is automatically stopped.
+The manual-assignment follow-up is recorded below. App compatibility and later service/lifecycle work remain part of the roadmap. No app in this slice is automatically stopped.
+
+## Milestone 2: Manual window assignment
+
+The user asked to publish the completed phases and continue on 2026-10-18. Foundation commit `f882202` was pushed to `main`. The management UI is [PR #1](https://github.com/yabswannalearn/jurabox/pull/1); the launcher is [PR #2](https://github.com/yabswannalearn/jurabox/pull/2), stacked on the UI branch so each diff contains one phase. Neither PR was merged. The assignment follow-up is developed separately from the launcher branch.
+
+### Implemented scope
+
+- A live-session Workspace windows panel, distinct from saved app configuration.
+- A searchable chooser of accessible application windows across desktops, with captions, actual executable paths, and existing assignment labels. Windows desktop/taskbar surfaces and the manager's own process are excluded.
+- Explicit assignment of a host window whose executable differs from the configured launcher, without changing launch settings or starting another app.
+- Session-scoped opaque chooser tokens with stale-list and process/window identity checks. A closed choice produces an actionable Refresh error. Cancelled or superseded discovery responses cannot reopen the chooser.
+- Unassign without closing or moving the window. Unchanged relaunch reuses manually assigned windows.
+- Private-window conflict protection for both manual assignment and automatic shared reuse. Cross-session linking requires both entries to be shared; shared assignment follows the actual active project.
+- Hidden-window identities included in the pre-launch snapshot, so an existing window becoming visible is not mistaken for a new one. Caption changes do not invalidate window identity.
+- Keyboard focus goes to chooser search, and background form controls are disabled while it is open. The sidebar constrains long project names.
+- A separate `assignment-check --exercise` for the actual worker/UI callbacks and private external fixtures. The workspace exercise additionally covers assignment and sharing rules, with an optional real CMD/terminal-host test.
+- Native console executable-path normalization. A minimal `CreateProcessW` reproduction isolated CMD misparsing a mixed-separator executable name; argument text remains unchanged. The optional live console fixture retains this path form as a regression case.
+
+### Validation
+
+`cargo fmt --check`, `cargo build --locked`, `cargo test --locked` (12 tests), and `cargo clippy --locked --all-targets -- -D warnings` passed.
+
+The live `assignment-check --exercise` passed: picker discovery across desktops, keyboard isolation, manual host assignment, unchanged relaunch, unassign leaving the app open, cancel during discovery, closed-window rejection, refresh, and restoration of the original desktops. Compact picker, assigned-window, and expired-choice snapshots were inspected in `target/ui-check/`; long sidebar names no longer introduce horizontal scrolling.
+
+The workspace exercise passed with both `JURABOX_CHECK_BROWSER` (Edge) and `JURABOX_CHECK_CONSOLE=1`. It covered opaque-token rejection, caption changes, hidden-window snapshots, manual assignment to a different executable, private/manual/automatic sharing conflicts, linking shared entries, active-project movement, unchanged relaunch, unassign, and dead-window rejection. The real CMD fixture started from a mixed-separator executable path and its terminal-host window was explicitly assigned, moved, reused, and unassigned. Only a newly created window with the fixture's unique title was eligible. Its window and the browser fixture were closed during cleanup.
+
+The existing `ui-check` passed project/app/link persistence, unsaved-edit and failed-save protection, deletion preserving files, instance activation, and close-to-tray/Show behavior. Compact editor and browser-field snapshots were inspected. Final `status` showed the same original two desktop GUIDs with the original first desktop active. These are development-host checks, not general application compatibility certification.
+
+### Remaining work
+
+Read-only application inventory found Zed, ChatGPT, Docker Desktop, and Windows Terminal installed on the development host. Installation alone does not establish compatibility. Complete their launch/reuse pilot, including packaged apps, terminal-host behavior, native path pickers, keyboard traversal, scaling, and elevated-window limitations. Runtime persistence and reconnection remain unimplemented.
+
+Next service phase: typed commands/startup actions and Compose workloads with ownership tracking, bounded output, readiness/dependencies, graceful Stop, Retry, and explicit Force stop. Inactivity timers, Keep running, lock/sleep handling, verified reactivation, and recovery follow reliable service ownership.

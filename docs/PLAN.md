@@ -259,7 +259,7 @@ Planned development milestones:
 4. Add inactivity policies, Keep running, graceful reactivation, persistence, reconnection, and crash recovery.
 5. Validate the complete personal pilot before broader distribution.
 
-The milestone 1 desktop compatibility tool passes its basic exercise. Milestone 2 now includes app/link configuration, initial executable/window matching, Open/Switch, deliberate relaunch, shared windows, and session close. Runtime associations are in memory. Manual window selection, app-specific adapters, the full installed-app pilot, and recovery remain follow-up work. Later service and lifecycle milestones remain planned. See [PROGRESS.md](PROGRESS.md) for executed validation.
+The milestone 1 desktop compatibility tool passes its basic exercise. Milestone 2 now includes app/link configuration, executable/window matching, Open/Switch, deliberate relaunch, shared windows, session close, and explicit window assignment/unassignment. The chooser supports differing launcher and host executables, rejects stale identities, and protects private assignments across sessions. Runtime associations are in memory. App-specific launch adapters, the full installed-app pilot, and recovery remain follow-up work. Later service and lifecycle milestones remain planned. See [PROGRESS.md](PROGRESS.md) for executed validation.
 
 ## Technical validation still required
 

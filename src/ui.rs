@@ -1,6 +1,10 @@
 #[cfg(windows)]
+mod assignment_smoke;
+#[cfg(windows)]
 mod launch;
 mod smoke;
+#[cfg(windows)]
+mod window_picker;
 
 use crate::projects::{Project, ProjectFile, ProjectStore};
 use anyhow::{Context, Result};
@@ -21,6 +25,8 @@ struct State {
     workspace: crate::platform::workspace::Summary,
     #[cfg(windows)]
     launcher: Option<std::sync::mpsc::Sender<launch::Request>>,
+    #[cfg(windows)]
+    picker: Option<window_picker::Context>,
 }
 
 fn notice(window: &AppWindow, message: &str, error: bool) {
@@ -115,6 +121,14 @@ fn can_leave_form(window: &AppWindow) -> bool {
     if window.get_busy() {
         return false;
     }
+    if window.get_window_picker_visible() {
+        notice(
+            window,
+            "Close the window picker before changing projects.",
+            true,
+        );
+        return false;
+    }
     if window.get_dirty() {
         notice(
             window,
@@ -192,12 +206,16 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
         workspace: Default::default(),
         #[cfg(windows)]
         launcher: None,
+        #[cfg(windows)]
+        picker: None,
     }));
     let window = AppWindow::new().context("Cannot create the Jurabox window.")?;
     let tray = AppTray::new().context("Cannot create the Jurabox tray icon.")?;
     refresh(&window, &state.lock().unwrap());
     #[cfg(windows)]
     launch::setup(&window, state.clone());
+    #[cfg(windows)]
+    window_picker::setup(&window, state.clone());
 
     let weak = window.as_weak();
     let selected_state = state.clone();
@@ -251,7 +269,7 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
         let Some(window) = weak.upgrade() else {
             return;
         };
-        if window.get_busy() {
+        if window.get_busy() || window.get_window_picker_visible() {
             return;
         }
         let state = save_state.lock().unwrap();
@@ -383,4 +401,15 @@ pub fn run(start_hidden: bool) -> Result<()> {
 
 pub fn check() -> Result<()> {
     smoke::run()
+}
+
+pub fn assignment_check() -> Result<()> {
+    #[cfg(windows)]
+    {
+        assignment_smoke::run()
+    }
+    #[cfg(not(windows))]
+    {
+        anyhow::bail!("The assignment exercise requires Windows 11.")
+    }
 }
