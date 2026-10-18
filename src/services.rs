@@ -22,14 +22,14 @@ pub use check::run as check;
 pub use fixture::run as fixture;
 pub(crate) use readiness_check::health_config;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     Start,
     Stop,
     ForceStop,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct View {
     pub id: Uuid,
     pub name: String,
@@ -657,6 +657,26 @@ impl Services {
             entry.poll();
         }
         self.schedule();
+    }
+
+    pub fn resume_monitoring(&self) {
+        for entry in &self.entries {
+            if let Some(compose) = &entry.compose {
+                compose.monitor(true);
+            }
+        }
+    }
+
+    pub fn pause_monitoring(&mut self) {
+        for entry in &mut self.entries {
+            if let Some(compose) = &entry.compose {
+                compose.monitor(false);
+            }
+            if matches!(entry.status, Status::Waiting | Status::Checking) {
+                entry.cancel_startup();
+                entry.detail = "Startup paused when Jurabox closed. Use Start to continue.".into();
+            }
+        }
     }
 
     pub fn act(&mut self, id: Uuid, action: Action) -> Result<String> {

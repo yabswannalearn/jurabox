@@ -19,6 +19,7 @@ pub(super) enum Request {
     Service(Uuid, Uuid, crate::services::Action),
     Poll,
     StopAndQuit,
+    LeaveAndQuit,
 }
 
 impl From<winvd::DesktopEvent> for Request {
@@ -114,193 +115,232 @@ pub(super) fn pick(window: &AppWindow, folder: bool) -> Result<Option<PathBuf>> 
     apps::pick_path(HWND(handle.hwnd.get() as *mut _), folder)
 }
 
-pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
+pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>, persistent: bool) {
     let (sender, receiver) = mpsc::channel::<Request>();
     state.lock().unwrap().launcher = Some(sender.clone());
-    let weak = window.as_weak();
-    let worker_state = state.clone();
-    std::thread::spawn(move || {
-        let _listener = winvd::listen_desktop_events(sender);
-        if let Err(error) = &_listener {
-            let message = format!(
-                "Desktop event tracking unavailable ({error:?}). Open/Switch remains available, but native switches cannot be tracked."
-            );
-            let _ = weak.upgrade_in_event_loop(move |window| notice(&window, &message, true));
-        }
-        let mut workspaces = Workspaces::default();
-        let mut choices: Option<(Uuid, crate::platform::workspace::WindowChoices)> = None;
-        let mut last_workloads = Vec::new();
-        loop {
-            let request = if workspaces.service_activity() {
-                match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
-                    Ok(request) => request,
-                    Err(mpsc::RecvTimeoutError::Timeout) => Request::Poll,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            } else {
-                match receiver.recv() {
-                    Ok(request) => request,
-                    Err(_) => break,
-                }
-            };
-            let mut summary;
-            let mut picker_completion = None;
-            let mut quit = false;
-            let completed = match request {
-                Request::Open(project, relaunch) => {
-                    let result = workspaces.open(project, relaunch);
-                    summary = workspaces.summary();
-                    match result {
-                        Ok(message) => summary.message = message,
-                        Err(error) => {
-                            summary.message = format!("{error:#}");
-                            summary.error = true;
-                        }
+    if persistent {
+        let journal = state.lock().unwrap().store.session_journal();
+        super::connection::start(window, state.clone(), receiver, journal);
+    } else {
+        let weak = window.as_weak();
+        let worker_state = state.clone();
+        std::thread::spawn(move || {
+            let _listener = winvd::listen_desktop_events(sender);
+            if let Err(error) = &_listener {
+                let message = format!(
+                    "Desktop event tracking unavailable ({error:?}). Open/Switch remains available, but native switches cannot be tracked."
+                );
+                let _ = weak.upgrade_in_event_loop(move |window| notice(&window, &message, true));
+            }
+            let mut workspaces = Workspaces::default();
+            let mut choices: Option<(Uuid, crate::platform::workspace::WindowChoices)> = None;
+            let mut last_workloads = Vec::new();
+            loop {
+                let request = if workspaces.service_activity() {
+                    match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+                        Ok(request) => request,
+                        Err(mpsc::RecvTimeoutError::Timeout) => Request::Poll,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
-                    true
-                }
-                Request::Close(id) => {
-                    let result = workspaces.close(id);
-                    summary = workspaces.summary();
-                    match result {
-                        Ok(message) => summary.message = message,
-                        Err(error) => {
-                            summary.message = format!("{error:#}");
-                            summary.error = true;
-                        }
+                } else {
+                    match receiver.recv() {
+                        Ok(request) => request,
+                        Err(_) => break,
                     }
-                    true
-                }
-                Request::Service(project, service, action) => {
-                    let result = workspaces.service_action(project, service, action);
-                    summary = workspaces.summary();
-                    match result {
-                        Ok(message) => summary.message = message,
-                        Err(error) => {
-                            summary.message = format!("{error:#}");
-                            summary.error = true;
+                };
+                let mut summary;
+                let mut picker_completion = None;
+                let mut quit = false;
+                let completed = match request {
+                    Request::LeaveAndQuit => continue,
+                    Request::Open(project, relaunch) => {
+                        let result = workspaces.open(project, relaunch);
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(message) => summary.message = message,
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
                         }
+                        true
                     }
-                    true
-                }
-                Request::StopAndQuit => {
-                    let result = workspaces.stop_for_exit();
-                    summary = workspaces.summary();
-                    match result {
-                        Ok(()) => {
-                            quit = true;
-                            summary.message = "Managed workloads stopped.".into();
+                    Request::Close(id) => {
+                        let result = workspaces.close(id);
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(message) => summary.message = message,
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
                         }
-                        Err(error) => {
-                            summary.message = format!("{error:#}");
-                            summary.error = true;
-                        }
+                        true
                     }
-                    true
-                }
-                Request::Poll => {
-                    let workloads = workspaces.poll_services();
-                    if workloads != last_workloads {
-                        last_workloads = workloads.clone();
-                        let state = worker_state.clone();
-                        let _ = weak.upgrade_in_event_loop(move |window| {
-                            let mut state = state.lock().unwrap();
-                            state.workspace.workloads = workloads;
-                            service_forms::refresh_runtime(&window, &state);
-                        });
+                    Request::Service(project, service, action) => {
+                        let result = workspaces.service_action(project, service, action);
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(message) => summary.message = message,
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
+                        }
+                        true
                     }
-                    continue;
-                }
-                Request::Windows(ticket, project, app) => {
-                    let result = match workspaces.window_choices(project, app) {
-                        Ok(snapshot) => {
-                            let options = snapshot.options.clone();
-                            choices = Some((ticket, snapshot));
-                            Ok(options)
+                    Request::StopAndQuit => {
+                        let result = workspaces.stop_for_exit();
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(()) => {
+                                quit = true;
+                                summary.message = "Managed workloads stopped.".into();
+                            }
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
                         }
-                        Err(error) => {
-                            choices = None;
-                            Err(format!("{error:#}"))
-                        }
-                    };
-                    let state = worker_state.clone();
-                    let _ = weak.upgrade_in_event_loop(move |window| {
-                        window_picker::loaded(&window, &mut state.lock().unwrap(), ticket, result);
-                    });
-                    continue;
-                }
-                Request::Assign(ticket, choice) => {
-                    let result = match choices.as_ref().filter(|(current, _)| *current == ticket) {
-                        Some((_, choices)) => workspaces.assign_choice(choices, choice),
-                        None => Err(anyhow::anyhow!(
-                            "That window list is out of date. Refresh and choose again."
-                        )),
-                    };
-                    picker_completion = Some((ticket, result.is_ok()));
-                    summary = workspaces.summary();
-                    match result {
-                        Ok(message) => summary.message = message,
-                        Err(error) => {
-                            summary.message = format!("{error:#}");
-                            summary.error = true;
-                        }
+                        true
                     }
-                    true
-                }
-                Request::Unassign(project, app) => {
-                    let result = workspaces.unassign_window(project, app);
-                    summary = workspaces.summary();
-                    match result {
-                        Ok(message) => summary.message = message,
-                        Err(error) => {
-                            summary.message = format!("{error:#}");
-                            summary.error = true;
+                    Request::Poll => {
+                        let workloads = workspaces.poll_services();
+                        if workloads != last_workloads {
+                            last_workloads = workloads.clone();
+                            let state = worker_state.clone();
+                            let _ = weak.upgrade_in_event_loop(move |window| {
+                                let mut state = state.lock().unwrap();
+                                state.workspace.workloads = workloads;
+                                service_forms::refresh_runtime(&window, &state);
+                            });
                         }
-                    }
-                    true
-                }
-                Request::Desktop(event) => {
-                    if !matches!(
-                        event,
-                        winvd::DesktopEvent::DesktopChanged { .. }
-                            | winvd::DesktopEvent::DesktopDestroyed { .. }
-                    ) {
                         continue;
                     }
-                    summary = workspaces.desktop_changed();
-                    if matches!(event, winvd::DesktopEvent::DesktopDestroyed { .. }) {
-                        summary.message = "A desktop was removed. Open an affected project to restore its workspace; apps stay running.".into();
+                    Request::Windows(ticket, project, app) => {
+                        let result = match workspaces.window_choices(project, app) {
+                            Ok(snapshot) => {
+                                let options = snapshot.options.clone();
+                                choices = Some((ticket, snapshot));
+                                Ok(options)
+                            }
+                            Err(error) => {
+                                choices = None;
+                                Err(format!("{error:#}"))
+                            }
+                        };
+                        let state = worker_state.clone();
+                        let _ = weak.upgrade_in_event_loop(move |window| {
+                            window_picker::loaded(
+                                &window,
+                                &mut state.lock().unwrap(),
+                                ticket,
+                                result,
+                            );
+                        });
+                        continue;
                     }
-                    false
-                }
-            };
-            last_workloads = summary.workloads.clone();
-            let state = worker_state.clone();
-            let _ = weak.upgrade_in_event_loop(move |window| {
-                if completed {
-                    window.set_workspace_busy(false);
-                }
-                let mut state = state.lock().unwrap();
-                if let Some((ticket, success)) = picker_completion {
-                    window_picker::completed(&window, &mut state, ticket, success, &summary);
-                }
-                state.workspace = summary;
-                refresh_status(&window, &state);
-                if !state.workspace.message.is_empty() {
-                    notice(&window, &state.workspace.message, state.workspace.error);
-                }
-                if quit {
-                    if window.get_dirty() {
-                        notice(
-                            &window,
-                            "Services stopped. Save or discard your changes before quitting.",
-                            true,
-                        );
-                    } else {
-                        let _ = slint::quit_event_loop();
+                    Request::Assign(ticket, choice) => {
+                        let result =
+                            match choices.as_ref().filter(|(current, _)| *current == ticket) {
+                                Some((_, choices)) => workspaces.assign_choice(choices, choice),
+                                None => Err(anyhow::anyhow!(
+                                    "That window list is out of date. Refresh and choose again."
+                                )),
+                            };
+                        picker_completion = Some((ticket, result.is_ok()));
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(message) => summary.message = message,
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
+                        }
+                        true
                     }
-                }
-            });
+                    Request::Unassign(project, app) => {
+                        let result = workspaces.unassign_window(project, app);
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(message) => summary.message = message,
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
+                        }
+                        true
+                    }
+                    Request::Desktop(event) => {
+                        if !matches!(
+                            event,
+                            winvd::DesktopEvent::DesktopChanged { .. }
+                                | winvd::DesktopEvent::DesktopDestroyed { .. }
+                        ) {
+                            continue;
+                        }
+                        summary = workspaces.desktop_changed();
+                        if matches!(event, winvd::DesktopEvent::DesktopDestroyed { .. }) {
+                            summary.message = "A desktop was removed. Open an affected project to restore its workspace; apps stay running.".into();
+                        }
+                        false
+                    }
+                };
+                last_workloads = summary.workloads.clone();
+                let state = worker_state.clone();
+                let _ = weak.upgrade_in_event_loop(move |window| {
+                    if completed {
+                        window.set_workspace_busy(false);
+                    }
+                    let mut state = state.lock().unwrap();
+                    if let Some((ticket, success)) = picker_completion {
+                        window_picker::completed(&window, &mut state, ticket, success, &summary);
+                    }
+                    state.workspace = summary;
+                    refresh_status(&window, &state);
+                    if !state.workspace.message.is_empty() {
+                        notice(&window, &state.workspace.message, state.workspace.error);
+                    }
+                    if quit {
+                        if window.get_dirty() {
+                            notice(
+                                &window,
+                                "Services stopped. Save or discard your changes before quitting.",
+                                true,
+                            );
+                        } else {
+                            let _ = slint::quit_event_loop();
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    let weak = window.as_weak();
+    let leave_state = state.clone();
+    window.on_leave_and_quit(move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        if !can_leave_form(&window) || window.get_workspace_busy() {
+            return;
+        }
+        let state = leave_state.lock().unwrap();
+        window.set_workspace_busy(true);
+        if state
+            .launcher
+            .as_ref()
+            .unwrap()
+            .send(Request::LeaveAndQuit)
+            .is_err()
+        {
+            window.set_workspace_busy(false);
+            notice(
+                &window,
+                "Cannot contact the session worker. Reopen Jurabox to reconnect.",
+                true,
+            );
         }
     });
 

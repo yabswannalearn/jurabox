@@ -1,11 +1,15 @@
 #[cfg(windows)]
 mod assignment_smoke;
 #[cfg(windows)]
+mod connection;
+#[cfg(windows)]
 mod launch;
 #[cfg(windows)]
 mod service_forms;
 #[cfg(windows)]
 mod service_smoke;
+#[cfg(windows)]
+mod session_smoke;
 mod smoke;
 #[cfg(windows)]
 mod window_picker;
@@ -195,7 +199,7 @@ fn request_quit(window: &AppWindow) {
             "Wait for the current operation to finish before quitting.",
             true,
         );
-    } else if window.get_managed_live() {
+    } else if window.get_managed_live() && !window.get_session_host_enabled() {
         show(window);
         notice(
             window,
@@ -203,13 +207,21 @@ fn request_quit(window: &AppWindow) {
             true,
         );
     } else if can_leave_form(window) {
-        let _ = slint::quit_event_loop();
+        if window.get_session_host_enabled() && window.get_session_connected() {
+            window.invoke_leave_and_quit();
+        } else {
+            let _ = slint::quit_event_loop();
+        }
     } else {
         show(window);
     }
 }
 
 pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
+    create_with_host(store, false)
+}
+
+fn create_with_host(store: ProjectStore, persistent: bool) -> Result<(AppWindow, AppTray)> {
     let data = store.load()?;
     let selected = data.projects.first().map(|project| project.id);
     let state = Arc::new(Mutex::new(State {
@@ -225,9 +237,10 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
     }));
     let window = AppWindow::new().context("Cannot create the Jurabox window.")?;
     let tray = AppTray::new().context("Cannot create the Jurabox tray icon.")?;
+    window.set_session_host_enabled(persistent);
     refresh(&window, &state.lock().unwrap());
     #[cfg(windows)]
-    launch::setup(&window, state.clone());
+    launch::setup(&window, state.clone(), persistent);
     #[cfg(windows)]
     service_forms::setup(&window, state.clone());
     #[cfg(windows)]
@@ -341,6 +354,15 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
             return;
         };
         #[cfg(windows)]
+        if window.get_session_host_enabled() && !window.get_session_connected() {
+            notice(
+                &window,
+                "Reconnect or resolve lost sessions before deleting a project.",
+                true,
+            );
+            return;
+        }
+        #[cfg(windows)]
         if state.workspace.open.contains(&id) || window.get_workspace_busy() {
             notice(
                 &window,
@@ -412,7 +434,7 @@ pub fn run(start_hidden: bool) -> Result<()> {
         return Ok(());
     };
     let path = ProjectStore::default_path()?;
-    let (window, _tray) = create(ProjectStore::new(path))?;
+    let (window, _tray) = create_with_host(ProjectStore::new(path), true)?;
     #[cfg(windows)]
     instance.listen(window.as_weak());
     if !start_hidden {
@@ -439,6 +461,11 @@ pub fn service_check() -> Result<()> {
     {
         anyhow::bail!("Service UI checks require Windows 11.")
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn session_check() -> Result<()> {
+    session_smoke::run()
 }
 
 pub fn assignment_check() -> Result<()> {

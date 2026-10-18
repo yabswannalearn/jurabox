@@ -209,6 +209,11 @@ pub struct ProjectStore {
 }
 
 impl ProjectStore {
+    #[cfg(windows)]
+    pub fn session_journal(&self) -> PathBuf {
+        self.path.with_extension("session-host.json")
+    }
+
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }

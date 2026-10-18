@@ -34,6 +34,8 @@ enum Request {
     Stop,
     Force,
     Release,
+    Monitor(bool),
+    Shutdown,
 }
 struct Event {
     snapshot: Snapshot,
@@ -46,6 +48,7 @@ pub(super) struct Runtime {
     pending: HashSet<Uuid>,
     snapshot: Snapshot,
     cancel: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Runtime {
@@ -55,12 +58,13 @@ impl Runtime {
         let cancel = Arc::new(AtomicBool::new(false));
         let mut controller =
             controller::Controller::new(project, config.clone(), folder, cancel.clone());
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("compose-workload".into())
             .spawn(move || {
                 let mut last_error = None;
+                let mut monitoring = true;
                 loop {
-                    let request = if controller.activity() {
+                    let request = if monitoring && controller.activity() {
                         match requests.recv_timeout(controller.poll_interval()) {
                             Ok(request) => Some(request),
                             Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -77,6 +81,14 @@ impl Runtime {
                         Some(Request::Stop) => controller.stop(),
                         Some(Request::Force) => controller.force(),
                         Some(Request::Release) => controller.release(),
+                        Some(Request::Shutdown) => break,
+                        Some(Request::Monitor(enabled)) => {
+                            monitoring = enabled;
+                            if !enabled {
+                                continue;
+                            }
+                            controller.refresh()
+                        }
                         None => controller.refresh(),
                     };
                     if request.is_some() || result.is_err() || controller.available() {
@@ -100,6 +112,7 @@ impl Runtime {
             pending: HashSet::new(),
             snapshot: Snapshot::default(),
             cancel,
+            worker: Some(worker),
         })
     }
     fn request(&mut self, request: Request) -> Result<Uuid> {
@@ -109,6 +122,11 @@ impl Runtime {
             .context("Compose worker stopped; ownership is uncertain")?;
         self.pending.insert(id);
         Ok(id)
+    }
+    pub fn monitor(&self, enabled: bool) {
+        // This changes observation only, never service ownership or lifecycle.
+        // It must not count as an outstanding Start/Stop operation.
+        let _ = self.sender.send((Uuid::nil(), Request::Monitor(enabled)));
     }
     pub fn poll(&mut self) {
         loop {
@@ -192,5 +210,17 @@ impl Runtime {
     }
     pub fn output(&self) -> &str {
         &self.snapshot.output
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Session removal follows successful finish/release. Wait for the worker
+        // to close its read-only log clients and delete its private snapshot before
+        // a normal host exit can end the process. Crashes still require recovery.
+        let _ = self.sender.send((Uuid::nil(), Request::Shutdown));
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
