@@ -4,7 +4,7 @@ Last updated: 2026-10-18 (Asia/Shanghai).
 
 Repository: [yabswannalearn/jurabox](https://github.com/yabswannalearn/jurabox). The user selected this repository for the project on 2026-10-17.
 
-Status: product decisions accepted and implementation authorized on 2026-10-18. The first desktop compatibility exercise passes on the development host; management UI and later milestones remain planned. See [implementation progress](PROGRESS.md).
+Status: product decisions accepted. The user accepted all recommendations Q01-Q28 in the [design decision record](DESIGN-QUESTIONS.md) and authorized starting development on 2026-10-18. The basic desktop exercise and initial project-management/tray UI pass their checks on the development host. App/link launching and Open/Switch actions are next; real app compatibility and later service/lifecycle features remain in progress. See [implementation progress](PROGRESS.md) for executed checks and remaining work.
 
 Terminology: [domain glossary](../CONTEXT.md). Architecture: [Windows desktops](adr/0001-use-windows-virtual-desktops.md) and [Rust application with separate platform integration](adr/0002-rust-application-with-platform-modules.md).
 
@@ -219,19 +219,19 @@ Begin as one Rust application with separate modules for project rules, session/s
 | Concern | Decision or candidate |
 | --- | --- |
 | Core and application architecture | Rust, one application with separate modules |
-| Interface | Native-rendered Rust UI; Slint is a candidate requiring validation |
+| Interface | Slint 1.18.1 for the initial native-rendered management UI; pilot and release validation ongoing |
 | Documented Windows integration | Microsoft's windows crate is a candidate |
 | Full virtual desktop integration | winvd 0.0.49 for the initial desktop slice; basic operations validated on build 26200.9711, real app compatibility pending |
 | App and script launching | Rust process APIs are a candidate |
 | Process tracking | Windows Job Objects where suitable; not the universal ownership mechanism |
-| Settings/session persistence | Local storage; concrete format and recovery mechanism to be selected during engineering |
+| Settings/session persistence | Versioned local JSON for saved project settings; runtime ownership/session persistence and recovery remain to be designed |
 | macOS and Linux | Later platform integrations; none implemented for the initial Windows release |
 
 Project definitions and service/session rules remain separate from Windows-specific handles and desktop operations. The future platform targets justify this boundary without requiring a generic plugin system or distributed services.
 
 ### UI toolkit recommendation
 
-Slint is the leading recommendation for the pilot, pending startup, idle resource, Windows integration, and distribution validation.
+Slint 1.18.1 is being used for the initial management UI slice, following the documentation assessment on 2026-10-17 and the user's request to continue development on 2026-10-18. The broader toolkit validation gate remains open; implemented behavior and executed checks are tracked in [PROGRESS.md](PROGRESS.md).
 
 - Define the project sidebar, configuration forms, status panel, and dialogs in `.slint` files compiled into Rust components. Keep project/session rules and Windows operations in Rust modules. See the [Rust integration documentation](https://docs.slint.dev/latest/docs/rust/slint/).
 - Its Winit backend supports Windows, macOS, and Linux, matching the UI portability direction. Platform-specific workspace integration remains separate. See the [backend documentation](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/).
@@ -259,7 +259,7 @@ Planned development milestones:
 4. Add inactivity policies, Keep running, graceful reactivation, persistence, reconnection, and crash recovery.
 5. Validate the complete personal pilot before broader distribution.
 
-Implementation has started with the milestone 1 desktop compatibility tool. Later milestones remain planned.
+The milestone 1 desktop compatibility tool passes its basic exercise. Milestone 2 has started with project configuration and tray controls; app/link launching and Open/Switch actions remain next. Later service and lifecycle milestones remain planned.
 
 ## Technical validation still required
 
@@ -271,7 +271,7 @@ These are engineering checks, not undecided product preferences:
 - Design reliable workload identity and session persistence for reconnection, including detached container workloads.
 - Validate dependency-aware startup/shutdown, partial failures, and return-during-stop behavior.
 - Validate supported app launch/reuse behavior, multiple monitors/scaling, and elevated-window limitations.
-- Select local persistence, exact output limits, and export handling consistent with the accepted rules.
+- Saved project settings now use versioned local JSON. Validate upgrades and interrupted-write recovery, and select runtime/session persistence, output limits, and export handling consistent with the accepted rules.
 - Measure responsiveness and idle resource use rather than assuming the language or toolkit establishes performance.
 
 Development host inspected read-only on 2026-10-17: Microsoft Windows 11 Home Single Language, 25H2, build 26200.9711, 64-bit.

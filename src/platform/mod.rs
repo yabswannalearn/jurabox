@@ -2,7 +2,7 @@
 mod windows;
 
 #[cfg(windows)]
-pub use windows::{desktop_check, status};
+pub use windows::{ManagerInstance, activate_management_window, desktop_check, status};
 
 #[cfg(not(windows))]
 pub fn status() -> anyhow::Result<()> {
