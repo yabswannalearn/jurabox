@@ -8,7 +8,7 @@ use std::{
 use uuid::Uuid;
 
 mod workloads;
-pub use workloads::{CommandSpec, WorkloadConfig, WorkloadKind};
+pub use workloads::{CommandSpec, Readiness, WorkloadConfig, WorkloadKind};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +148,7 @@ impl Project {
                 "Each app, service, and startup action needs its own nonempty identity."
             );
         }
+        workloads::validate_dependencies(&self.workloads)?;
         Ok(())
     }
 }
@@ -162,7 +163,7 @@ pub struct ProjectFile {
 impl Default for ProjectFile {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             projects: Vec::new(),
         }
     }
@@ -187,7 +188,7 @@ impl ProjectFile {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 3,
+            self.version == 4,
             "This project file uses unsupported version {}. Keep the file and use a compatible Jurabox version.",
             self.version
         );
@@ -239,8 +240,8 @@ impl ProjectStore {
                 self.path.display()
             )
         })?;
-        if matches!(data.version, 1 | 2) {
-            data.version = 3;
+        if matches!(data.version, 1..=3) {
+            data.version = 4;
         }
         data.validate()?;
         Ok(data)
@@ -318,7 +319,7 @@ mod tests {
         fs::write(&path, &old).unwrap();
         let store = ProjectStore::new(path.clone());
         let data = store.load().unwrap();
-        assert_eq!(data.version, 3);
+        assert_eq!(data.version, 4);
         assert!(data.projects[0].apps.is_empty() && data.projects[0].browser.is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         store.save(&data).unwrap();
@@ -379,11 +380,11 @@ mod tests {
     #[test]
     fn unsupported_versions_and_duplicate_ids_are_rejected() {
         let mut data = ProjectFile {
-            version: 4,
+            version: 5,
             ..Default::default()
         };
         assert!(data.validate().is_err());
-        data.version = 3;
+        data.version = 4;
         let entry = project("First");
         data.projects.extend([entry.clone(), entry]);
         assert!(data.validate().is_err());

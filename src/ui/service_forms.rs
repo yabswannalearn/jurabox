@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    projects::{CommandSpec, WorkloadConfig, WorkloadKind},
+    projects::{CommandSpec, Readiness, WorkloadConfig, WorkloadKind},
     services::Action,
 };
 use slint::Model;
@@ -35,6 +35,25 @@ pub(super) fn load(window: &AppWindow, project: Option<&Project>) {
                 .unwrap_or_default()
                 .into(),
             stop_timeout: entry.stop_timeout_seconds as i32,
+            readiness: match entry.readiness {
+                Readiness::ProcessRunning => 0,
+                Readiness::Tcp { .. } => 1,
+                Readiness::Http { .. } => 2,
+            },
+            readiness_endpoint: match &entry.readiness {
+                Readiness::ProcessRunning => String::new(),
+                Readiness::Tcp { address } => address.to_string(),
+                Readiness::Http { url } => url.clone(),
+            }
+            .into(),
+            readiness_timeout: entry.readiness_timeout_seconds as i32,
+            dependencies: entry
+                .dependencies
+                .iter()
+                .map(Uuid::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .into(),
         })
         .collect();
     window.set_workloads(ModelRc::new(VecModel::from(rows)));
@@ -65,6 +84,14 @@ pub(super) fn read(window: &AppWindow, project: &mut Project) -> Result<()> {
                 folder: (!row.folder.trim().is_empty()).then(|| PathBuf::from(row.folder.trim())),
                 stop,
                 stop_timeout_seconds: row.stop_timeout as u32,
+                readiness: match row.readiness {
+                    0 => Readiness::ProcessRunning,
+                    1 => Readiness::Tcp { address: row.readiness_endpoint.trim().parse().context("Enter a TCP IP address and port, for example 127.0.0.1:3000 or [::1]:3000.")? },
+                    2 => Readiness::Http { url: row.readiness_endpoint.trim().into() },
+                    _ => anyhow::bail!("Choose a startup readiness condition."),
+                },
+                readiness_timeout_seconds: row.readiness_timeout as u32,
+                dependencies: row.dependencies.split_whitespace().map(Uuid::parse_str).collect::<std::result::Result<_, _>>()?,
             })
         })
         .collect::<Result<_>>()?;
@@ -88,6 +115,7 @@ pub(super) fn refresh_runtime(window: &AppWindow, state: &State) {
             error: view.error,
             live: view.live,
             can_start: view.can_start,
+            can_stop: view.can_stop,
         })
         .collect();
     window.set_session_workloads(ModelRc::new(VecModel::from(rows)));
@@ -98,6 +126,31 @@ fn editable(window: &AppWindow) -> bool {
 }
 
 pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
+    window.on_has_dependency(|values, id| {
+        values.split_whitespace().any(|value| value == id.as_str())
+    });
+    let weak = window.as_weak();
+    window.on_toggle_dependency(move |index, id, checked| {
+        if let Some(window) = weak.upgrade()
+            && editable(&window)
+        {
+            let mut rows: Vec<_> = window.get_workloads().iter().collect();
+            if let Some(row) = rows.get_mut(index as usize) {
+                let mut values: Vec<_> = row
+                    .dependencies
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
+                values.retain(|value| value != id.as_str());
+                if checked {
+                    values.push(id.to_string());
+                }
+                row.dependencies = values.join(" ").into();
+                window.set_workloads(ModelRc::new(VecModel::from(rows)));
+                window.set_dirty(true);
+            }
+        }
+    });
     let weak = window.as_weak();
     window.on_add_workload(move |one_shot| {
         if let Some(window) = weak.upgrade()
@@ -114,6 +167,7 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
                 .into(),
                 one_shot,
                 stop_timeout: 10,
+                readiness_timeout: 60,
                 ..Default::default()
             });
             window.set_workloads(ModelRc::new(VecModel::from(rows)));
@@ -127,6 +181,19 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
         {
             let mut rows: Vec<_> = window.get_workloads().iter().collect();
             if index >= 0 && (index as usize) < rows.len() {
+                let id = &rows[index as usize].id;
+                if rows.iter().any(|row| {
+                    row.dependencies
+                        .split_whitespace()
+                        .any(|value| value == id.as_str())
+                }) {
+                    notice(
+                        &window,
+                        "Remove this workload from other prerequisites before removing it.",
+                        true,
+                    );
+                    return;
+                }
                 rows.remove(index as usize);
                 window.set_workloads(ModelRc::new(VecModel::from(rows)));
                 window.set_dirty(true);

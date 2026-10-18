@@ -199,3 +199,33 @@ Existing `ui-check`, `assignment-check --exercise`, and `workspace-check --exerc
 This is the first slice of milestone 3. Compose-specific ownership and non-escalating shutdown, TCP/HTTP readiness and deadlines, dependency coordination, environment overrides, and richer progress/cancellation remain. Durable output, the accepted leave-running exit, persistence, and verified reconnection require further lifecycle work. Inactivity auto-stop is not active, and existing saved inactivity values remain configuration only.
 
 The ordinary Quit guard is temporary; it does not remove the accepted leave-running exit from the product plan. No crash-survival or reconnection guarantee is made by this slice. Full editor/ChatGPT/Docker compatibility, elevation, scaling, keyboard/accessibility, and release performance pilots remain open.
+
+## Milestone 3: Startup readiness and dependency coordination
+
+On 2026-10-18 the user deferred manual testing until the product is further along and authorized PR/merge followed by continued development. Command-services [PR #4](https://github.com/yabswannalearn/jurabox/pull/4) was merged as `ee63ffa`, preserving phase commit `4b45231`. This follow-up starts from that main on `codex/service-readiness`.
+
+### Implemented scope
+
+- Process-running, explicit TCP IP/port, and HTTP(S) 2xx startup gates with a configurable default 60-second deadline starting after the owned command launches.
+- Background network probes, a single pending check per workload, bounded probe stages, and attempt identities that discard stale completion after cancellation or Retry.
+- Pre-launch endpoint conflict checks that report existing responses without creating a command or adopting/terminating the existing workload. This is best effort and cannot prove response ownership.
+- Separate Waiting, Checking endpoint, Starting, and Not ready states. Timeouts retain live workloads; Retry checks the same job. Successful startup ends probing.
+- Project-local prerequisites by stable workload UUID, cycle/self/duplicate/missing-reference rejection, and queued dependents that wait for service readiness or successful completion of finite actions. Failed prerequisites require explicit Retry; running dependents retain their processes and report transitive dependency problems.
+- Reverse dependency normal shutdown, preservation of prerequisites when a dependent refuses to stop, continued independent shutdown, and a single-entry Stop guard for prerequisites with live dependents. Force stop remains explicit and scoped to the selected owned job.
+- Readiness/dependency configuration and runtime controls in the manager, with guarded removal of referenced prerequisites. Settings schema 4 migrates versions 1–3 in memory until Save.
+
+The [coordination ADR](adr/0005-coordinate-startup-readiness-and-dependencies.md) records network behavior, conflict-check limitations, scheduling, cancellation, and shutdown semantics.
+
+### Validation
+
+`cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` (18 tests), and `cargo build --locked` passed on the Windows 11 development host. New unit coverage checks endpoint/timeout validation, graph validation with stable IDs across renames, schema 3 migration without rewriting on load, and schema 4 readiness/dependency round trips.
+
+The core service exercise passed delayed TCP readiness, unordered dependency declarations, waiting without consuming a dependent's deadline, cancellation of queued starts, single-prerequisite Stop protection, and reverse-order shutdown. HTTP checks passed 503/302/204 responses, preserved query strings, redirect refusal, timeout retention, Retry using the original process, finite-action prerequisites, conflicts without command creation/adoption, and transitive prerequisite-loss reporting without cascading stops. It also passed failed dependent shutdown retaining prerequisites while independent work stops, explicit Retry after a failed action, and stale preflight cancellation without blocking the workspace actor. Existing command/output/ownership checks passed again.
+
+The real service UI exercise passed readiness and dependency persistence, cycle rejection preserving the draft, referenced-prerequisite removal protection, Waiting and Not ready states, and live-instance Retry. The first run exposed a one-second deadline/poll-ordering bug: a completed response could be discarded before it was read. Results now carry completion timestamps and the first probe begins immediately. The full exercise then passed with the one-second timeout, along with its existing old-session shutdown, save separation, manual stop/switch, relaunch/Close/quit failure retention, explicit Force stop, and successful stop-and-quit checks. Its failure cleanup and successful rerun both restored the original desktops and ended only owned fixture workloads.
+
+Compact HTTP editor, Waiting, Not ready, running/output, and stop-failure snapshots were inspected. Existing `ui-check` and `assignment-check --exercise` passed again. The workspace exercise passed with real Edge browser links and the CMD/terminal-host fixture, including unchanged reuse, manual assignment/sharing, desktop movement and recreation, partial launch failure, and owned-window cleanup. Final status confirmed the original ordered two desktop GUIDs with the original first desktop active. These checks do not establish broad application compatibility or release performance.
+
+### Remaining work
+
+Compose-specific ownership and non-escalating shutdown, environment overrides, and richer progress/cancellation remain in milestone 3. Inactivity timers, Keep running, return-during-stop handling, durable output, leave-running quit, session persistence, and verified reconnection remain later lifecycle work. Existing saved inactivity values still do not stop workloads. Full application compatibility and release-performance validation remain open.
