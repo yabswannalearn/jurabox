@@ -38,6 +38,7 @@ _Avoid_: Selected project when referring to the workspace currently in use.
 
 **Project app**:
 A user-facing application associated with a **Project**, such as an editor, browser, or terminal window.
+Choose it by its installed Windows display name. Jurabox keeps its launch details; paths and arguments are optional advanced settings.
 
 **Shared app**:
 A user-facing application instance explicitly assigned for reuse across multiple **Workspaces**.

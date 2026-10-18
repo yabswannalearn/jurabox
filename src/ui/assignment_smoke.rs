@@ -73,6 +73,7 @@ pub(super) fn run() -> Result<()> {
     let probe = Rc::new(RefCell::new(crate::platform::OwnedProbe::start()?));
     let mut project = Project::from_form(None, &name, "", None)?;
     let app = crate::projects::AppConfig {
+        app_id: None,
         id: Uuid::new_v4(),
         name: "Terminal / brokered app".into(),
         executable: temporary.path().join("missing-broker.exe"),

@@ -9,6 +9,7 @@ pub(super) fn run(
 ) -> Result<()> {
     let mut project = Project::from_form(None, "Jurabox manual assignment check", "", None)?;
     let app = AppConfig {
+        app_id: None,
         id: Uuid::new_v4(),
         name: "Brokered app slot".into(),
         executable: cleanup.probe_folder.path().join("missing-broker.exe"),
@@ -162,6 +163,7 @@ pub(super) fn run(
     );
     let mut automatic = Project::from_form(None, "Jurabox sharing conflict check", "", None)?;
     automatic.apps.push(AppConfig {
+        app_id: None,
         id: Uuid::new_v4(),
         executable: cleanup.probe_folder.path().join("jurabox-owned-probe.exe"),
         arguments: "_probe-window".into(),

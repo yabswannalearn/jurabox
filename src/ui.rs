@@ -1,4 +1,6 @@
 #[cfg(windows)]
+mod app_picker;
+#[cfg(windows)]
 mod assignment_smoke;
 #[cfg(windows)]
 mod connection;
@@ -85,9 +87,11 @@ fn refresh(window: &AppWindow, state: &State) {
                 id: app.id.to_string().into(),
                 name: app.name.clone().into(),
                 executable: app.executable.to_string_lossy().into_owned().into(),
+                app_id: app.app_id.clone().unwrap_or_default().into(),
                 arguments: app.arguments.clone().into(),
                 new_console: app.new_console,
                 shared: app.shared,
+                advanced: false,
             })
             .collect();
         window.set_apps(ModelRc::new(VecModel::from(apps)));
@@ -119,6 +123,9 @@ fn refresh(window: &AppWindow, state: &State) {
         window.set_browser_urls("".into());
     }
     window.set_dirty(false);
+    window.set_browser_advanced(false);
+    #[cfg(windows)]
+    app_picker::browser_label(window);
     window.set_delete_pending(false);
     window.set_picker_visible(false);
     #[cfg(windows)]
@@ -132,12 +139,8 @@ fn can_leave_form(window: &AppWindow) -> bool {
     if window.get_busy() {
         return false;
     }
-    if window.get_window_picker_visible() {
-        notice(
-            window,
-            "Close the window picker before changing projects.",
-            true,
-        );
+    if window.get_window_picker_visible() || window.get_picker_visible() {
+        notice(window, "Close the picker before changing projects.", true);
         return false;
     }
     if window.get_dirty() {
@@ -298,7 +301,7 @@ fn create_with_host(store: ProjectStore, persistent: bool) -> Result<(AppWindow,
         let Some(window) = weak.upgrade() else {
             return;
         };
-        if window.get_busy() || window.get_window_picker_visible() {
+        if window.get_busy() || window.get_window_picker_visible() || window.get_picker_visible() {
             return;
         }
         let state = save_state.lock().unwrap();

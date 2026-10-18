@@ -80,8 +80,9 @@ pub fn run() -> Result<()> {
     let outcome = result.clone();
     let mut step = 0;
     let mut original_id = None;
+    let mut selected_windows_app = None;
     let started = Instant::now();
-    let timeout = Duration::from_secs(30);
+    let timeout = Duration::from_secs(45);
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
             let mut run_step = || -> Result<bool> {
             ensure!(started.elapsed() < timeout, "UI check timed out at step {step}");
@@ -241,8 +242,83 @@ pub fn run() -> Result<()> {
                 16 => {
                     ensure!(read()?.projects[0].workloads.is_empty(), "Compose form removal did not persist");
                     println!("PASS Compose form add/save/reload/remove without starting Docker");
-                    window.invoke_quit();
-                    return Ok(true);
+                    window.window().set_size(slint::LogicalSize::new(1040., 740.));
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: 5000. })?;
+                    window.invoke_open_app_picker(false);
+                }
+                17 => {
+                    if window.get_apps_loading() { return Ok(false); }
+                    ensure!(window.get_installed_apps().iter().any(|row| row.name == "Command Prompt"), "installed-app discovery lost Command Prompt");
+                    println!("Catalog: {} apps, {} Windows app IDs", window.get_installed_apps().row_count(), window.get_installed_apps().iter().filter(|row| !row.app_id.is_empty()).count());
+                    snapshot(&window, &artifacts.join("app-picker.png"))?;
+                    window.invoke_focus_app_search();
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::KeyPressed { text: "COMMAND PROMPT".into() })?;
+                    ensure!(window.get_app_search() == "COMMAND PROMPT", "search did not receive keyboard focus");
+                    ensure!(window.get_installed_apps().row_count() > 0 && window.get_installed_apps().iter().all(|row| row.name.to_lowercase().contains("command prompt")), "app search did not filter by friendly name ignoring case");
+                }
+                18 => {
+                    snapshot(&window, &artifacts.join("app-search.png"))?;
+                    let index = window.get_installed_apps().iter().position(|row| row.name == "Command Prompt").context("Command Prompt disappeared from search")?;
+                    window.invoke_choose_app(index as i32);
+                    let row = window.get_apps().iter().last().context("selection added no app")?;
+                    ensure!(row.name == "Command Prompt" && row.new_console && !row.advanced && !row.executable.is_empty(), "app selection did not fill launch details with Advanced collapsed");
+                    ensure!(!window.get_picker_visible() && window.get_dirty(), "selection did not close picker and mark the draft");
+                    window.invoke_save_project();
+                }
+                19 => {
+                    ensure!(read()?.projects[0].apps.iter().any(|app| app.name == "Command Prompt" && app.new_console), "selected app did not persist");
+                    window.invoke_open_app_picker(true);
+                    ensure!(window.get_installed_apps().iter().all(|row| row.name == "Google Chrome" || row.name == "Microsoft Edge"), "browser picker included non-browser names");
+                    ensure!(window.get_installed_apps().row_count() > 0, "no supported installed browser found on this Windows host");
+                }
+                20 => {
+                    snapshot(&window, &artifacts.join("browser-picker.png"))?;
+                    window.invoke_choose_app(0);
+                    ensure!(window.get_browser_name() != "Custom browser" && window.get_dirty(), "browser selection did not fill the friendly name");
+                    window.invoke_save_project();
+                }
+                21 => {
+                    ensure!(!window.get_dirty(), "browser selection did not save");
+                    window.invoke_open_app_picker(false);
+                    window.set_app_search("no-app-matches-this-jurabox-check".into()); window.invoke_search_apps();
+                    ensure!(window.get_installed_apps().row_count() == 0, "empty search retained stale choices");
+                }
+                22 => {
+                    snapshot(&window, &artifacts.join("app-picker-empty.png"))?;
+                    window.set_picker_visible(false);
+                    ensure!(!window.get_dirty(), "cancelling the picker changed the saved setup");
+                    window.invoke_open_app_picker(false);
+                    window.set_app_search("ChatGPT".into()); window.invoke_search_apps();
+                    selected_windows_app = window.get_installed_apps().iter().find(|row| !row.app_id.is_empty()).map(|row| row.app_id.to_string());
+                    if selected_windows_app.is_none() {
+                        window.set_app_search("".into()); window.invoke_search_apps();
+                        selected_windows_app = window.get_installed_apps().iter().find(|row| !row.app_id.is_empty()).map(|row| row.app_id.to_string());
+                    }
+                }
+                23 => {
+                    snapshot(&window, &artifacts.join("windows-app-search.png"))?;
+                    if let Some(id) = &selected_windows_app {
+                        let index = window.get_installed_apps().iter().position(|row| row.app_id == id.as_str()).context("Windows app choice disappeared")?;
+                        window.invoke_choose_app(index as i32);
+                        window.invoke_save_project();
+                    } else { window.set_picker_visible(false); }
+                }
+                24 => {
+                    if let Some(id) = &selected_windows_app {
+                        ensure!(read()?.projects[0].apps.iter().any(|app| app.app_id.as_ref() == Some(id) && app.executable.as_os_str().is_empty()), "Windows app selection did not save its stable identity");
+                    }
+                    window.window().set_size(slint::LogicalSize::new(820., 650.));
+                    window.invoke_open_app_picker(false);
+                }
+                25 => {
+                    snapshot(&window, &artifacts.join("app-picker-compact.png"))?;
+                    window.set_picker_visible(false);
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -220. })?;
+                }
+                26 => {
+                    snapshot(&window, &artifacts.join("friendly-apps.png"))?;
+                    println!("PASS installed-app discovery, friendly-name search, empty results, app/browser selection, Windows app IDs, collapsed Advanced, save/reload and cancel without edits");
+                    window.invoke_quit(); return Ok(true);
                 }
                 _ => bail!("unexpected UI check step"),
             }

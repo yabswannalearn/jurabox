@@ -1,5 +1,10 @@
 use anyhow::{Context, Result, bail};
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+mod catalog;
+pub use catalog::{activate, installed_apps, resolve_app};
 use windows::{
     Win32::{
         Foundation::{
@@ -27,9 +32,12 @@ use windows::{
 pub struct InstalledApp {
     pub name: String,
     pub executable: PathBuf,
+    pub app_id: Option<String>,
+    pub arguments: String,
+    pub new_console: bool,
 }
 
-pub fn installed_apps() -> Vec<InstalledApp> {
+fn registry_apps() -> Vec<InstalledApp> {
     let mut found = BTreeMap::new();
     for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
         for key in [
@@ -137,7 +145,42 @@ fn add(found: &mut BTreeMap<String, InstalledApp>, name: String, executable: Pat
     {
         found
             .entry(executable.to_string_lossy().to_lowercase())
-            .or_insert(InstalledApp { name, executable });
+            .or_insert_with(|| InstalledApp::desktop(name, executable, String::new()));
+    }
+}
+
+impl InstalledApp {
+    fn desktop(name: String, executable: PathBuf, arguments: String) -> Self {
+        let new_console = executable.file_name().is_some_and(|name| {
+            matches!(
+                name.to_string_lossy().to_ascii_lowercase().as_str(),
+                "cmd.exe" | "powershell.exe" | "pwsh.exe"
+            )
+        });
+        Self {
+            name,
+            executable,
+            app_id: None,
+            arguments,
+            new_console,
+        }
+    }
+
+    pub fn is_browser(&self) -> bool {
+        browser_name(&self.executable).is_some()
+    }
+}
+
+pub fn browser_name(path: &Path) -> Option<&'static str> {
+    match path
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "chrome.exe" => Some("Google Chrome"),
+        "msedge.exe" => Some("Microsoft Edge"),
+        _ => None,
     }
 }
 
