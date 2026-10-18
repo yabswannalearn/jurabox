@@ -1,12 +1,16 @@
 mod platform;
+mod projects;
+mod ui;
 
 use anyhow::{Result, bail};
 use std::process::ExitCode;
 
 #[derive(Debug, PartialEq)]
 enum Command {
+    App { hidden: bool },
     Status,
     DesktopCheck,
+    UiCheck,
     Help,
 }
 
@@ -17,7 +21,10 @@ fn parse_command(args: &[String]) -> Result<Command> {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        [] | ["status"] => Ok(Command::Status),
+        [] | ["app"] => Ok(Command::App { hidden: false }),
+        ["--tray"] => Ok(Command::App { hidden: true }),
+        ["status"] => Ok(Command::Status),
+        ["ui-check"] => Ok(Command::UiCheck),
         ["desktop-check", "--exercise"] => Ok(Command::DesktopCheck),
         ["--help"] | ["-h"] | ["help"] => Ok(Command::Help),
         ["desktop-check"] => bail!(
@@ -30,13 +37,18 @@ fn parse_command(args: &[String]) -> Result<Command> {
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match parse_command(&args)? {
+        Command::App { hidden } => ui::run(hidden),
         Command::Status => platform::status(),
         Command::DesktopCheck => platform::desktop_check(),
+        Command::UiCheck => ui::check(),
         Command::Help => {
             println!(
-                "Jurabox compatibility tool\n\n\
-                 jurabox status                     List desktops without changing them (default)\n\
+                "Jurabox\n\n\
+                 jurabox                            Open the project manager (default)\n\
+                 jurabox --tray                     Start quietly in the tray\n\
+                 jurabox status                     List desktops without changing them\n\
                  jurabox desktop-check --exercise   Verify a temporary desktop and owned test window\n\n\
+                 jurabox ui-check                   Check UI using temporary settings\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );
@@ -64,8 +76,8 @@ mod tests {
     }
 
     #[test]
-    fn default_command_does_not_change_desktops() {
-        assert_eq!(parse_command(&[]).unwrap(), Command::Status);
+    fn default_command_opens_manager_without_launching_projects() {
+        assert_eq!(parse_command(&[]).unwrap(), Command::App { hidden: false });
     }
 
     #[test]

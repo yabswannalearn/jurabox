@@ -1,0 +1,254 @@
+import { AboutSlint, Button, CheckBox, LineEdit, ScrollView, SpinBox } from "std-widgets.slint";
+
+export struct ProjectRow { name: string, folder: string }
+
+export component AppTray inherits SystemTrayIcon {
+    icon: @image-url("assets/jurabox.svg");
+    tooltip: "Jurabox — your projects";
+    callback show-window();
+    callback new-project();
+    callback quit();
+    clicked => { root.show-window(); }
+    Menu {
+        MenuItem { title: "Show Jurabox"; activated => { root.show-window(); } }
+        MenuItem { title: "New project"; activated => { root.new-project(); } }
+        MenuSeparator {}
+        MenuItem { title: "Quit Jurabox"; activated => { root.quit(); } }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Jurabox";
+    icon: @image-url("assets/jurabox.svg");
+    preferred-width: 1040px;
+    preferred-height: 740px;
+    min-width: 800px;
+    min-height: 650px;
+    background: #ffffff;
+    default-font-family: "Segoe UI";
+    default-font-size: 14px;
+
+    in property <[ProjectRow]> projects;
+    in property <int> selected-index: -1;
+    in property <bool> editing-existing;
+    in property <bool> busy;
+    in-out property <string> project-name;
+    in-out property <string> project-folder;
+    in-out property <bool> auto-stop-enabled: true;
+    in-out property <int> auto-stop-minutes: 15;
+    in-out property <bool> dirty;
+    in-out property <bool> delete-pending;
+    in-out property <bool> about-visible;
+    in property <string> notice;
+    in property <bool> notice-error;
+    callback select-project(int);
+    callback new-project();
+    callback save-project();
+    callback discard-changes();
+    callback delete-project();
+    callback hide-window();
+    callback quit();
+    callback focus-name();
+    focus-name => { name-edit.focus(); }
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem { title: "New project"; shortcut: @keys(Control + N); activated => { root.new-project(); } }
+            MenuItem { title: "Save project"; shortcut: @keys(Control + S); enabled: !root.busy; activated => { root.save-project(); } }
+            MenuSeparator {}
+            MenuItem { title: "Hide to tray"; activated => { root.hide-window(); } }
+            MenuItem { title: "Quit Jurabox"; activated => { root.quit(); } }
+        }
+        Menu {
+            title: "Help";
+            MenuItem { title: "About Jurabox"; activated => { root.about-visible = true; } }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 0;
+        Rectangle {
+            width: 264px;
+            horizontal-stretch: 0;
+            background: #edf2f5;
+            VerticalLayout {
+                padding: 22px;
+                spacing: 20px;
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 10px;
+                    Image { source: @image-url("assets/jurabox.svg"); width: 30px; height: 30px; }
+                    Text { text: "jurabox"; font-family: "Bahnschrift"; font-size: 26px; color: #22313d; }
+                }
+                Text { text: "PROJECTS"; font-size: 11px; font-weight: 600; color: #65778d; }
+                Button { text: "+  New project"; enabled: !root.busy; clicked => { root.new-project(); } }
+                ScrollView {
+                    vertical-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 0;
+                        VerticalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            for project[index] in root.projects: VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Rectangle { width: 3px; background: index == root.selected-index ? #087f8c : transparent; border-radius: 1px; }
+                                    Button {
+                                        text: project.name;
+                                        min-height: 40px;
+                                        enabled: !root.busy;
+                                        clicked => { root.select-project(index); }
+                                        Tooltip { text: @markdown("\{project.folder}"); }
+                                    }
+                                }
+                                Text {
+                                    text: project.folder;
+                                    color: #65778d;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                    max-width: 208px;
+                                }
+                            }
+                            if root.projects.length == 0: Text {
+                                text: "Your saved projects\nwill appear here.";
+                                color: #65778d;
+                                font-size: 13px;
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: #d8e1e8; }
+                Text { text: "\{root.projects.length} saved on this PC"; font-size: 12px; color: #65778d; }
+                Button { text: "Hide to tray"; clicked => { root.hide-window(); } }
+            }
+        }
+        Rectangle {
+            background: #ffffff;
+            VerticalLayout {
+                padding-left: 36px;
+                padding-right: 36px;
+                padding-top: 30px;
+                padding-bottom: 22px;
+                spacing: 18px;
+                HorizontalLayout {
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: root.editing-existing ? "Project settings" : "New project"; font-family: "Bahnschrift"; font-size: 30px; color: #22313d; }
+                        Text { text: root.editing-existing ? "Edit the saved setup for this project." : "Add a name and an optional folder."; color: #65778d; font-size: 13px; }
+                    }
+                    Text { text: root.dirty ? "Unsaved changes" : (root.editing-existing ? "Saved" : ""); color: root.dirty ? #99651b : #087f8c; font-size: 12px; horizontal-alignment: right; }
+                }
+                Rectangle { height: 1px; background: #d8e1e8; }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 12px;
+                        padding-right: 8px;
+                        alignment: start;
+                        Text { text: "Project details"; font-size: 17px; font-weight: 600; color: #22313d; }
+                        Text { text: "Project name"; color: #22313d; }
+                        name-edit := LineEdit {
+                            text <=> root.project-name;
+                            placeholder-text: "e.g. Jurabox";
+                            enabled: !root.busy && !root.delete-pending;
+                            edited => { root.dirty = true; }
+                            accepted => { root.save-project(); }
+                        }
+                        Text { text: "Folder (optional)"; color: #22313d; }
+                        LineEdit {
+                            text <=> root.project-folder;
+                            placeholder-text: "Paste a folder path, or leave blank";
+                            enabled: !root.busy && !root.delete-pending;
+                            edited => { root.dirty = true; }
+                        }
+                        Text { text: "A project can have a name without a folder."; font-size: 12px; color: #65778d; }
+                        Rectangle { height: 20px; background: transparent; }
+                        Text { text: "Inactivity policy"; font-size: 17px; font-weight: 600; color: #22313d; }
+                        CheckBox {
+                            text: "Enable inactivity auto-stop";
+                            checked <=> root.auto-stop-enabled;
+                            enabled: !root.busy && !root.delete-pending;
+                            toggled => { root.dirty = true; }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Text { text: "After"; color: #22313d; }
+                            SpinBox {
+                                value <=> root.auto-stop-minutes;
+                                minimum: 1;
+                                maximum: 2147483647;
+                                preferred-width: 100px;
+                                enabled: root.auto-stop-enabled && !root.busy && !root.delete-pending;
+                                edited => { root.dirty = true; }
+                            }
+                            Text { text: "minutes away from this project"; color: #22313d; }
+                        }
+                        Text { text: "Saved changes apply the next time you launch the project."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                        if root.delete-pending: Rectangle {
+                            background: #fff1ef;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 12px;
+                                Text { text: "Remove this project from Jurabox?"; color: #922d25; font-weight: 600; }
+                                Text { text: "Its folder and files will stay where they are."; color: #65778d; font-size: 12px; }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Button { text: "Cancel"; enabled: !root.busy; clicked => { root.delete-pending = false; } }
+                                    Button { text: "Delete project"; enabled: !root.busy; clicked => { root.delete-project(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    min-height: 44px;
+                    vertical-stretch: 0;
+                    background: root.notice-error ? #fff1ef : #f3f6f8;
+                    border-radius: 6px;
+                    VerticalLayout {
+                        padding: 12px;
+                        Text {
+                            text: root.notice != "" ? root.notice : "Project settings are saved locally on this PC.";
+                            color: root.notice-error ? #922d25 : #65778d;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    Button { text: root.busy ? "Saving…" : (root.editing-existing ? "Save changes" : "Save project"); primary: true; enabled: !root.busy && !root.delete-pending; clicked => { root.save-project(); } }
+                    Button { text: "Discard changes"; enabled: root.dirty && !root.busy; clicked => { root.discard-changes(); } }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    if root.editing-existing: Button { text: "Delete project…"; enabled: !root.busy && !root.dirty && !root.delete-pending; clicked => { root.delete-pending = true; } }
+                }
+                Text { text: "Closing this window keeps Jurabox in the system tray."; color: #65778d; font-size: 11px; }
+            }
+        }
+    }
+    if root.about-visible: Rectangle {
+        background: #22313d80;
+        TouchArea { clicked => { root.about-visible = false; } }
+        Rectangle {
+            width: 460px;
+            height: 340px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                Text { text: "Jurabox"; font-family: "Bahnschrift"; font-size: 28px; color: #22313d; }
+                Text { text: "Project workspaces for Windows\nVersion 0.1.0"; color: #65778d; }
+                AboutSlint {}
+                Button { text: "Close"; clicked => { root.about-visible = false; } }
+            }
+        }
+    }
+}

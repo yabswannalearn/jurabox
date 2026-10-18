@@ -1,4 +1,29 @@
+mod instance;
 mod probe_window;
+pub use instance::ManagerInstance;
+
+pub fn activate_management_window(window: &slint::Window) -> anyhow::Result<()> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = window.window_handle();
+    if let RawWindowHandle::Win32(handle) = handle.window_handle()?.as_raw() {
+        let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut _);
+        // Only the management window's own handle is passed to this function.
+        // A desktop integration failure must not prevent showing the configuration UI.
+        if let Ok(desktop) = winvd::get_current_desktop() {
+            let _ = winvd::move_window_to_desktop(desktop, &hwnd);
+        }
+        // SAFETY: The handle was obtained from this live Slint window. Windows
+        // decides whether foreground activation is allowed; no focus rules are bypassed.
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SW_RESTORE, SetForegroundWindow, ShowWindow,
+            };
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+    Ok(())
+}
 
 use anyhow::{Context, Result, bail, ensure};
 use probe_window::ProbeWindow;
