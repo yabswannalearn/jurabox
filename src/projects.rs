@@ -14,6 +14,86 @@ pub struct Project {
     pub name: String,
     pub folder: Option<PathBuf>,
     pub inactivity_minutes: Option<u32>,
+    #[serde(default)]
+    pub apps: Vec<AppConfig>,
+    #[serde(default)]
+    pub browser: Option<BrowserConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppConfig {
+    pub id: Uuid,
+    pub name: String,
+    pub executable: PathBuf,
+    #[serde(default)]
+    pub arguments: String,
+    #[serde(default)]
+    pub new_console: bool,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+impl AppConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(!self.name.trim().is_empty(), "Give each app a name.");
+        ensure!(
+            self.executable.is_absolute(),
+            "Choose a full executable path for {}.",
+            self.name
+        );
+        ensure!(
+            self.executable
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe")),
+            "Choose an .exe application for {}. Run scripts through a configured terminal app.",
+            self.name
+        );
+        ensure!(
+            !self.arguments.contains('\0'),
+            "App arguments cannot contain a null character."
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserConfig {
+    pub executable: PathBuf,
+    pub urls: Vec<String>,
+}
+
+impl BrowserConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.executable.is_absolute(),
+            "Choose a full browser executable path."
+        );
+        let name = self
+            .executable
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        ensure!(
+            name == "chrome.exe" || name == "msedge.exe",
+            "Choose Chrome or Edge for the project browser window."
+        );
+        ensure!(
+            !self.urls.is_empty(),
+            "Add at least one browser link, or turn the browser window off."
+        );
+        for value in &self.urls {
+            let url =
+                url::Url::parse(value).with_context(|| format!("Enter a full web URL: {value}"))?;
+            ensure!(
+                matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
+                "Use http:// or https:// web links: {value}"
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Project {
@@ -28,18 +108,32 @@ impl Project {
             name: name.trim().to_owned(),
             folder: (!folder.trim().is_empty()).then(|| PathBuf::from(folder.trim())),
             inactivity_minutes,
+            apps: Vec::new(),
+            browser: None,
         };
         project.validate()?;
         Ok(project)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         ensure!(!self.name.trim().is_empty(), "Enter a project name.");
         if let Some(minutes) = self.inactivity_minutes {
             ensure!(
                 minutes > 0 && minutes <= i32::MAX as u32,
                 "Choose an inactivity timeout of at least one minute, or turn it off."
             );
+        }
+        let mut ids = std::collections::HashSet::new();
+        for app in &self.apps {
+            app.validate()?;
+            ensure!(
+                !app.id.is_nil(),
+                "Each app entry needs a nonempty identity."
+            );
+            ensure!(ids.insert(app.id), "Each app entry needs its own identity.");
+        }
+        if let Some(browser) = &self.browser {
+            browser.validate()?;
         }
         Ok(())
     }
@@ -55,7 +149,7 @@ pub struct ProjectFile {
 impl Default for ProjectFile {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             projects: Vec::new(),
         }
     }
@@ -80,7 +174,7 @@ impl ProjectFile {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 1,
+            self.version == 2,
             "This project file uses unsupported version {}. Keep the file and use a compatible Jurabox version.",
             self.version
         );
@@ -126,12 +220,15 @@ impl ProjectStore {
                 return Err(error).with_context(|| format!("Cannot read {}", self.path.display()));
             }
         };
-        let data: ProjectFile = serde_json::from_slice(&bytes).with_context(|| {
+        let mut data: ProjectFile = serde_json::from_slice(&bytes).with_context(|| {
             format!(
                 "Cannot read the project settings in {}. The file has been preserved.",
                 self.path.display()
             )
         })?;
+        if data.version == 1 {
+            data.version = 2;
+        }
         data.validate()?;
         Ok(data)
     }
@@ -198,6 +295,52 @@ mod tests {
     }
 
     #[test]
+    fn version_one_loads_without_rewriting_until_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("projects.json");
+        let old = format!(
+            r#"{{"version":1,"projects":[{{"id":"{}","name":"Existing","folder":null,"inactivity_minutes":15}}]}}"#,
+            Uuid::new_v4()
+        );
+        fs::write(&path, &old).unwrap();
+        let store = ProjectStore::new(path.clone());
+        let data = store.load().unwrap();
+        assert_eq!(data.version, 2);
+        assert!(data.projects[0].apps.is_empty() && data.projects[0].browser.is_none());
+        assert_eq!(fs::read_to_string(&path).unwrap(), old);
+        store.save(&data).unwrap();
+        assert_eq!(store.load().unwrap(), data);
+    }
+
+    #[test]
+    fn app_and_browser_setup_round_trip_with_validation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("projects.json"));
+        let mut entry = project("Tools");
+        entry.apps.push(AppConfig {
+            id: Uuid::new_v4(),
+            name: "Editor".into(),
+            executable: r"C:\Apps\editor.exe".into(),
+            arguments: r#"--new-window "{folder}""#.into(),
+            new_console: false,
+            shared: true,
+        });
+        entry.browser = Some(BrowserConfig {
+            executable: r"C:\Apps\chrome.exe".into(),
+            urls: vec!["https://example.com/?q=notes".into()],
+        });
+        let mut data = ProjectFile::default();
+        data.upsert(entry);
+        store.save(&data).unwrap();
+        assert_eq!(store.load().unwrap(), data);
+        data.projects[0].browser.as_mut().unwrap().urls = vec!["file:///C:/private.txt".into()];
+        assert!(store.save(&data).is_err());
+        data.projects[0].browser = None;
+        data.projects[0].apps[0].executable = "relative.exe".into();
+        assert!(store.save(&data).is_err());
+    }
+
+    #[test]
     fn malformed_settings_are_reported_without_overwriting() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("projects.json");
@@ -223,11 +366,11 @@ mod tests {
     #[test]
     fn unsupported_versions_and_duplicate_ids_are_rejected() {
         let mut data = ProjectFile {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
         assert!(data.validate().is_err());
-        data.version = 1;
+        data.version = 2;
         let entry = project("First");
         data.projects.extend([entry.clone(), entry]);
         assert!(data.validate().is_err());

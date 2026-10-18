@@ -84,4 +84,50 @@ After the checks, the normal management window was opened for the user. The seco
 
 ### Remaining work
 
-Add app/link configuration and launching, then Open/Switch workspace actions backed by the verified desktop integration. The stored inactivity policy is configuration only at this point; service control, real inactivity countdowns, and recovery remain later milestones. Keep Slint release startup, keyboard navigation, multiple display scales, and idle resource use under validation.
+The next app/link and workspace slice is recorded below. The stored inactivity policy is configuration only at this point; service control, real inactivity countdowns, and recovery remain later milestones. Keep Slint release startup, keyboard navigation, multiple display scales, and idle resource use under validation.
+
+## Milestone 2: App launching and project workspaces
+
+Implemented on 2026-10-18 after the user asked to commit each completed phase and continue. The desktop compatibility phase is commit `f882202`; the initial management UI/tray phase is commit `6a4478e`.
+
+### Implemented scope
+
+- App entries with stable IDs, executable paths, Windows arguments, optional console creation, and explicit shared reuse.
+- A searchable cached Windows App Paths catalog with common tool locations and native Browse fallback; this is not a complete inventory of packaged or portable apps.
+- An optional Chrome/Edge project window with HTTP(S) links and the user's existing browser profile.
+- Optional folder browsing and `{folder}` argument expansion; launching uses the project folder as the working directory when set.
+- Separate Open and Switch behavior, a copied session setup, deliberate relaunch with unchanged-window reuse, and Close session without closing apps or removing desktops. Deletion is blocked until the session ends.
+- Native desktop GUID associations, native-switch event handling, shared-window movement, and recreation of a deleted desktop while preserving attributable app windows.
+- A serialized workspace worker, bounded window discovery during startup, and event-driven idle behavior. Partial failures preserve successful apps and retain a session for explicit resolution.
+- Settings schema 2 with in-memory version 1 migration; the original file is left untouched until Save.
+
+The [app/session ADR](adr/0003-launch-apps-with-session-snapshots.md) records attribution rules and limitations. Matching uses a full executable path and a unique new application window, or an explicitly permitted unique existing shared window. Process identity includes creation time. These app associations never authorize service termination.
+
+### Validation
+
+The final unit run passed all 12 tests, including native argument parsing, app/browser persistence and validation, and version 1 migration without rewriting the original file until Save.
+
+The live workspace exercise passed on Windows 11 25H2 build 26200.9711, including a real Edge 155.0.4283.45 window with two temporary loopback HTTP pages. It verified:
+
+1. External child-process app launch and exact-executable window assignment.
+2. Continued availability of the successful app when another configured executable is missing.
+3. Shared-window movement across two project desktops and active project identity.
+4. Switch without duplicated apps or application of newly saved configuration.
+5. Deliberate relaunch applying saved changes while preserving unchanged app/browser windows, including a renamed app label.
+6. Respect for manually closed apps on Switch and reopening on explicit relaunch.
+7. External desktop switching and recreation after desktop deletion while preserving the live app.
+8. Close session leaving app windows open, followed by fixture-only cleanup.
+9. Both real browser URLs loading, browser window assignment, unchanged-window reuse, and closure of the test browser window.
+10. Restoration of the original ordered desktop identities and active desktop, with test child windows and the private copied executable removed.
+
+The exercise's private executable copy prevents its shared-app matcher from selecting a pre-existing Jurabox management window. New-window movement waits briefly for Explorer registration and retains the app identity on failure. The default exercise uses only the test app; the real-browser path is explicitly enabled with `JURABOX_CHECK_BROWSER`.
+
+The final `cargo run --locked -- ui-check` passed with temporary settings. In addition to the original save/error/tray checks, it verified app and browser-link persistence, unrelated edits preserving app entries, and selection without launching a session. Normal and compact screenshots were inspected, including scrolled app/browser fields and a clearly labeled session-controls layout fixture. The review corrected a collapsed multiline URL editor and stacked session actions to fit the compact sidebar. Snapshots are reproducible in `target/ui-check/`.
+
+`cargo fmt --check` and `cargo clippy --locked --all-targets -- -D warnings` passed. Native file-picker interaction, complete keyboard traversal, screen-reader behavior, and release performance remain pilot checks.
+
+### Remaining work
+
+Runtime session/desktop/window associations are not yet persisted. After Jurabox restarts, only saved projects are restored; users must not assume surviving windows are reconnected. Manual window selection, brokered/packaged/terminal-host adapters, actual editor/ChatGPT/Docker compatibility, multi-monitor and scaling checks, and broader failure recovery remain open. A launch with no attributable window is reported and never automatically retried; explicit relaunch may request another window.
+
+Next workspace follow-up: manual window assignment and pilot checks for editor, ChatGPT, Docker Desktop, and terminal-host behavior. Then build typed services and startup actions, bounded output, readiness and dependencies, graceful shutdown, Retry, and explicit Force stop. Real inactivity timers, Keep running, lock/sleep handling, and verified recovery follow service ownership. No app in this slice is automatically stopped.

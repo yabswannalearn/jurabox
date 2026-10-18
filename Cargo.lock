@@ -2336,6 +2336,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tempfile",
+ "url",
  "uuid",
  "windows 0.58.0",
  "winvd",

@@ -1,6 +1,8 @@
-import { AboutSlint, Button, CheckBox, LineEdit, ScrollView, SpinBox } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
 
 export struct ProjectRow { name: string, folder: string }
+export struct AppDraft { id: string, name: string, executable: string, arguments: string, new-console: bool, shared: bool }
+export struct InstalledRow { name: string, executable: string }
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/jurabox.svg");
@@ -32,6 +34,16 @@ export component AppWindow inherits Window {
     in property <int> selected-index: -1;
     in property <bool> editing-existing;
     in property <bool> busy;
+    in property <bool> workspace-busy;
+    in property <bool> session-open;
+    in property <string> active-workspace: "No project active";
+    in-out property <[AppDraft]> apps;
+    in property <[InstalledRow]> installed-apps;
+    in-out property <string> app-search;
+    in-out property <bool> picker-visible;
+    in-out property <bool> browser-enabled;
+    in-out property <string> browser-executable;
+    in-out property <string> browser-urls;
     in-out property <string> project-name;
     in-out property <string> project-folder;
     in-out property <bool> auto-stop-enabled: true;
@@ -49,6 +61,16 @@ export component AppWindow inherits Window {
     callback hide-window();
     callback quit();
     callback focus-name();
+    callback add-app();
+    callback remove-app(int);
+    callback browse-app(int);
+    callback browse-folder();
+    callback browse-browser();
+    callback search-apps();
+    callback choose-app(int);
+    callback open-project();
+    callback relaunch-project();
+    callback close-project();
     focus-name => { name-edit.focus(); }
 
     MenuBar {
@@ -82,6 +104,7 @@ export component AppWindow inherits Window {
                     Text { text: "jurabox"; font-family: "Bahnschrift"; font-size: 26px; color: #22313d; }
                 }
                 Text { text: "PROJECTS"; font-size: 11px; font-weight: 600; color: #65778d; }
+                Text { text: root.active-workspace; color: #087f8c; font-size: 12px; wrap: word-wrap; }
                 Button { text: "+  New project"; enabled: !root.busy; clicked => { root.new-project(); } }
                 ScrollView {
                     vertical-stretch: 1;
@@ -120,6 +143,13 @@ export component AppWindow inherits Window {
                     }
                 }
                 Rectangle { height: 1px; background: #d8e1e8; }
+                VerticalLayout {
+                    spacing: 8px;
+                    vertical-stretch: 0;
+                    Button { text: root.workspace-busy ? "Working…" : (root.session-open ? "Switch to project" : "Open project"); primary: true; enabled: root.editing-existing && !root.busy && !root.workspace-busy && !root.dirty; clicked => { root.open-project(); } }
+                    if root.session-open: Button { text: "Relaunch saved setup"; enabled: !root.busy && !root.workspace-busy && !root.dirty; clicked => { root.relaunch-project(); } }
+                    if root.session-open: Button { text: "Close session"; enabled: !root.busy && !root.workspace-busy && !root.dirty; clicked => { root.close-project(); } }
+                }
                 Text { text: "\{root.projects.length} saved on this PC"; font-size: 12px; color: #65778d; }
                 Button { text: "Hide to tray"; clicked => { root.hide-window(); } }
             }
@@ -158,13 +188,61 @@ export component AppWindow inherits Window {
                             accepted => { root.save-project(); }
                         }
                         Text { text: "Folder (optional)"; color: #22313d; }
+                        HorizontalLayout {
                         LineEdit {
                             text <=> root.project-folder;
                             placeholder-text: "Paste a folder path, or leave blank";
                             enabled: !root.busy && !root.delete-pending;
                             edited => { root.dirty = true; }
                         }
+                        Button { text: "Browse…"; enabled: !root.busy; clicked => { root.browse-folder(); } }
+                        }
                         Text { text: "A project can have a name without a folder."; font-size: 12px; color: #65778d; }
+                        Rectangle { height: 12px; background: transparent; }
+                        Text { text: "Apps to open"; font-size: 17px; font-weight: 600; color: #22313d; }
+                        Text { text: "Add an app, then choose its executable and optional arguments."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button { text: "Find installed app"; enabled: !root.busy; clicked => { root.picker-visible = !root.picker-visible; root.search-apps(); } }
+                            Button { text: "+ Custom app"; enabled: !root.busy; clicked => { root.add-app(); } }
+                        }
+                        if root.picker-visible: VerticalLayout {
+                            spacing: 6px;
+                            LineEdit { text <=> root.app-search; placeholder-text: "Search apps registered with Windows"; edited => { root.search-apps(); } }
+                            for app[index] in root.installed-apps: Button { text: app.name; enabled: !root.busy; clicked => { root.choose-app(index); } Tooltip { text: @markdown("\{app.executable}"); } }
+                            Text { text: "Showing up to 6 matches. Use Custom app for anything missing."; font-size: 11px; color: #65778d; wrap: word-wrap; }
+                        }
+                        for app[index] in root.apps: Rectangle {
+                            background: #f3f6f8;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    LineEdit { text <=> app.name; placeholder-text: "App name"; enabled: !root.busy; edited => { root.dirty = true; } }
+                                    Button { text: "Remove"; enabled: !root.busy; clicked => { root.remove-app(index); } }
+                                }
+                                HorizontalLayout {
+                                    LineEdit { text <=> app.executable; placeholder-text: "Full path to the .exe"; enabled: !root.busy; edited => { root.dirty = true; } }
+                                    Button { text: "Browse…"; enabled: !root.busy; clicked => { root.browse-app(index); } }
+                                }
+                                LineEdit { text <=> app.arguments; placeholder-text: "Arguments (optional), e.g. --new-window \"{folder}\""; enabled: !root.busy; edited => { root.dirty = true; } }
+                                CheckBox { text: "Open a console window (CMD / PowerShell)"; checked <=> app.new-console; enabled: !root.busy; toggled => { root.dirty = true; } }
+                                CheckBox { text: "Shared app: follow the active project"; checked <=> app.shared; enabled: !root.busy; toggled => { root.dirty = true; } }
+                            }
+                        }
+                        Text { text: "Arguments use Windows quoting. {folder} passes the project folder. Shared reuse requires a single matching window; other apps need their own new-window option."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                        Rectangle { height: 12px; background: transparent; }
+                        Text { text: "Project browser"; font-size: 17px; font-weight: 600; color: #22313d; }
+                        CheckBox { text: "Open links in a new Chrome or Edge window"; checked <=> root.browser-enabled; enabled: !root.busy; toggled => { root.dirty = true; } }
+                        if root.browser-enabled: VerticalLayout {
+                            spacing: 8px;
+                            HorizontalLayout {
+                                LineEdit { text <=> root.browser-executable; placeholder-text: "Full path to chrome.exe or msedge.exe"; enabled: !root.busy; edited => { root.dirty = true; } }
+                                Button { text: "Browse…"; enabled: !root.busy; clicked => { root.browse-browser(); } }
+                            }
+                            TextEdit { text <=> root.browser-urls; min-height: 100px; preferred-height: 100px; vertical-stretch: 0; placeholder-text: "One https:// link per line"; enabled: !root.busy; edited => { root.dirty = true; } }
+                        }
                         Rectangle { height: 20px; background: transparent; }
                         Text { text: "Inactivity policy"; font-size: 17px; font-weight: 600; color: #22313d; }
                         CheckBox {
@@ -187,7 +265,7 @@ export component AppWindow inherits Window {
                             }
                             Text { text: "minutes away from this project"; color: #22313d; }
                         }
-                        Text { text: "Saved changes apply the next time you launch the project."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                        Text { text: "Inactivity settings are saved for the service phase. GUI apps stay open. Saved changes apply on Open or Relaunch saved setup."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                         if root.delete-pending: Rectangle {
                             background: #fff1ef;
                             border-radius: 6px;
@@ -225,7 +303,7 @@ export component AppWindow inherits Window {
                     Button { text: root.busy ? "Saving…" : (root.editing-existing ? "Save changes" : "Save project"); primary: true; enabled: !root.busy && !root.delete-pending; clicked => { root.save-project(); } }
                     Button { text: "Discard changes"; enabled: root.dirty && !root.busy; clicked => { root.discard-changes(); } }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                    if root.editing-existing: Button { text: "Delete project…"; enabled: !root.busy && !root.dirty && !root.delete-pending; clicked => { root.delete-pending = true; } }
+                    if root.editing-existing: Button { text: "Delete project…"; enabled: !root.busy && !root.workspace-busy && !root.session-open && !root.dirty && !root.delete-pending; clicked => { root.delete-pending = true; } }
                 }
                 Text { text: "Closing this window keeps Jurabox in the system tray."; color: #65778d; font-size: 11px; }
             }

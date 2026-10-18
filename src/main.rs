@@ -11,6 +11,8 @@ enum Command {
     Status,
     DesktopCheck,
     UiCheck,
+    WorkspaceCheck,
+    ProbeWindow,
     Help,
 }
 
@@ -25,10 +27,12 @@ fn parse_command(args: &[String]) -> Result<Command> {
         ["--tray"] => Ok(Command::App { hidden: true }),
         ["status"] => Ok(Command::Status),
         ["ui-check"] => Ok(Command::UiCheck),
+        ["workspace-check", "--exercise"] => Ok(Command::WorkspaceCheck),
+        ["_probe-window"] => Ok(Command::ProbeWindow),
         ["desktop-check", "--exercise"] => Ok(Command::DesktopCheck),
         ["--help"] | ["-h"] | ["help"] => Ok(Command::Help),
-        ["desktop-check"] => bail!(
-            "desktop-check requires --exercise: it temporarily switches desktops and opens a test window"
+        ["desktop-check"] | ["workspace-check"] => bail!(
+            "This check requires --exercise: it temporarily switches desktops and opens test windows"
         ),
         _ => bail!("unknown command; run jurabox --help for usage"),
     }
@@ -41,6 +45,8 @@ fn run() -> Result<()> {
         Command::Status => platform::status(),
         Command::DesktopCheck => platform::desktop_check(),
         Command::UiCheck => ui::check(),
+        Command::WorkspaceCheck => platform::workspace_check(),
+        Command::ProbeWindow => platform::probe_window(),
         Command::Help => {
             println!(
                 "Jurabox\n\n\
@@ -49,6 +55,7 @@ fn run() -> Result<()> {
                  jurabox status                     List desktops without changing them\n\
                  jurabox desktop-check --exercise   Verify a temporary desktop and owned test window\n\n\
                  jurabox ui-check                   Check UI using temporary settings\n\n\
+                 jurabox workspace-check --exercise Verify app launching and workspace switching\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );
@@ -83,6 +90,11 @@ mod tests {
     #[test]
     fn desktop_changes_require_explicit_exercise_flag() {
         assert!(parse_command(&args(&["desktop-check"])).is_err());
+        assert!(parse_command(&args(&["workspace-check"])).is_err());
+        assert_eq!(
+            parse_command(&args(&["workspace-check", "--exercise"])).unwrap(),
+            Command::WorkspaceCheck
+        );
         assert_eq!(
             parse_command(&args(&["desktop-check", "--exercise"])).unwrap(),
             Command::DesktopCheck

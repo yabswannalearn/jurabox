@@ -10,11 +10,17 @@ Requires Windows 11, Rust 1.92 or newer with the MSVC toolchain, and Visual Stud
 cargo run
 ```
 
-The Slint management window supports creating, editing, and deleting saved projects, an optional project folder, and a saved inactivity policy. Closing the window hides it to the system tray. Click the tray icon or choose Show Jurabox to reopen it; use Quit Jurabox to exit. Launching Jurabox again activates the existing instance.
+The Slint management window supports saved projects, an optional folder, app entries, browser links, and a saved inactivity policy. Closing the window hides it to the system tray. Click the tray icon or choose Show Jurabox to reopen it; use Quit Jurabox to exit. Launching Jurabox again activates the existing instance.
 
 Settings are stored in `%LOCALAPPDATA%\Jurabox\projects.json`. Save operations run on a worker thread and replace the settings file through a temporary file in the same directory. Invalid or unsupported files are reported rather than overwritten. Deleting a saved project leaves its folder and files intact.
 
-This development slice manages saved configuration. App/link launching, Open/Switch workspace controls, service management, and live inactivity timers are still being built. Selecting a project only edits its setup. The saved inactivity setting does not yet stop processes.
+Selecting a project edits its setup. Save it, then choose **Open project** to create a Windows desktop and launch its apps. **Switch to project** returns to an existing session without reopening closed apps. **Relaunch saved setup** applies later saved changes and reuses unchanged verified app windows. **Close session** leaves app windows and the desktop open; end the session before deleting the saved entry. Desktop cleanup is manual.
+
+Use **Find installed app** to search Windows App Paths and common tools, or **Custom app** with Browse for another `.exe`. Optional arguments use Windows quoting; `"{folder}"` passes the project folder as one argument. Enable the console option for interactive CMD/PowerShell entries. Scripts can be launched through an explicitly configured shell; these GUI/terminal entries have no managed service shutdown behavior.
+
+The browser option opens configured HTTP(S) links in a new Chrome or Edge window using the existing profile. **Shared app** explicitly permits reuse of one matching existing window and moves it with the active project. Multiple matching windows are reported as ambiguous. Otherwise, only a unique new window matching the executable is assigned. If an app delegates to another executable, takes longer than five seconds, or reuses a previous window, it may launch without assignment: check it before explicitly relaunching. Packaged apps, terminal hosts, and application-specific adapters still need pilot validation.
+
+Live sessions currently last only while Jurabox runs. Reopening Jurabox restores saved settings, but does not reconnect to surviving app windows or desktops yet. Service management, live inactivity timers, and session recovery remain later phases; the saved inactivity setting does not yet stop processes.
 
 To start with only a tray icon:
 
@@ -53,9 +59,12 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo run -- ui-check
+cargo run -- workspace-check --exercise
 ```
 
-Unit tests do not open windows or switch desktops. The live UI check uses temporary settings, exercises project save/error/tray flows, and writes screenshots to `target/ui-check/`. The live checks require an unlocked interactive Windows session; the desktop exercise runs separately.
+Unit tests do not open windows or switch desktops. The live UI check uses temporary settings, exercises project/app/link forms and save/error/tray flows, and writes screenshots to `target/ui-check/`. The workspace exercise launches separate Jurabox test processes, verifies assignment, shared movement, session semantics, desktop deletion/recreation, and partial failure. It restores the original desktops and closes only its test windows. The live checks require an unlocked interactive Windows session.
+
+To include an installed Chrome/Edge browser in the workspace exercise, set `JURABOX_CHECK_BROWSER` to its full executable path for that command. The check serves two temporary loopback HTTP pages, verifies the new browser window and reuse, and closes that window during cleanup. It uses the existing browser profile. This optional check passed with Edge 155.0.4283.45 on the development host.
 
 ## Design documents
 
@@ -64,4 +73,5 @@ Unit tests do not open windows or switch desktops. The live UI check uses tempor
 - [Domain glossary](CONTEXT.md)
 - [Windows desktop architecture](docs/adr/0001-use-windows-virtual-desktops.md)
 - [Rust application architecture](docs/adr/0002-rust-application-with-platform-modules.md)
+- [App launching and session snapshots](docs/adr/0003-launch-apps-with-session-snapshots.md)
 - [Implementation progress and validation](docs/PROGRESS.md)
