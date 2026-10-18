@@ -1,5 +1,9 @@
+#[cfg(windows)]
+mod command_keeper;
 mod platform;
 mod projects;
+#[cfg(windows)]
+mod recovery;
 #[cfg(windows)]
 mod services;
 #[cfg(windows)]
@@ -23,6 +27,8 @@ enum Command {
     ServiceUiCheck,
     ComposeCheck,
     SessionCheck,
+    RecoveryCheck,
+    Keeper,
     SessionHost {
         journal: std::path::PathBuf,
     },
@@ -51,6 +57,8 @@ fn parse_command(args: &[String]) -> Result<Command> {
         ["service-ui-check", "--exercise"] => Ok(Command::ServiceUiCheck),
         ["compose-check", "--exercise"] => Ok(Command::ComposeCheck),
         ["session-check", "--exercise"] => Ok(Command::SessionCheck),
+        ["recovery-check", "--exercise"] => Ok(Command::RecoveryCheck),
+        ["_command-keeper"] => Ok(Command::Keeper),
         ["_session-host", journal] => Ok(Command::SessionHost {
             journal: (*journal).into(),
         }),
@@ -67,7 +75,8 @@ fn parse_command(args: &[String]) -> Result<Command> {
         | ["service-check"]
         | ["service-ui-check"]
         | ["compose-check"]
-        | ["session-check"] => bail!(
+        | ["session-check"]
+        | ["recovery-check"] => bail!(
             "This check requires --exercise: it temporarily switches desktops and opens test windows"
         ),
         _ => bail!("unknown command; run jurabox --help for usage"),
@@ -103,6 +112,26 @@ fn run() -> Result<()> {
             #[cfg(not(windows))]
             {
                 bail!("Session checks require Windows 11.")
+            }
+        }
+        Command::RecoveryCheck => {
+            #[cfg(windows)]
+            {
+                session_host::recovery_check()
+            }
+            #[cfg(not(windows))]
+            {
+                bail!("Recovery checks require Windows 11.")
+            }
+        }
+        Command::Keeper => {
+            #[cfg(windows)]
+            {
+                command_keeper::run()
+            }
+            #[cfg(not(windows))]
+            {
+                bail!("Command keepers require Windows 11.")
             }
         }
         Command::ComposeCheck => {
@@ -151,6 +180,7 @@ fn run() -> Result<()> {
                  jurabox service-ui-check --exercise Verify service controls in a temporary workspace\n\n\
                  jurabox compose-check --exercise   Verify private Docker Compose containers\n\n\
                  jurabox session-check --exercise   Verify background sessions and reconnection\n\n\
+                 jurabox recovery-check --exercise  Verify recovery after a private host crash\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );

@@ -294,3 +294,36 @@ Existing core command/readiness checks and service UI checks passed, including r
 This is manager recovery while the original session host survives. Loss of the host itself, logoff/reboot, cold recovery of independently surviving containers/commands, and an in-app resolution flow for uncertain records remain unfinished. Such records currently block launches rather than silently replacing work. Output is bounded host memory and is lost with the host. Abandoned snapshot cleanup and executable-update coordination also remain.
 
 Inactivity timers, Keep running, lock/sleep handling, return-during-stop behavior, environment override forms, and richer cancellation/progress remain. No automatic inactivity stop is enabled. Full application/elevation/scaling/accessibility pilots and release-performance measurements remain open.
+
+## Milestone 4: Command recovery after session-host failure
+
+Implemented on 2026-10-18. The [command recovery ADR](adr/0008-recover-original-command-jobs.md) extends the previous warm-reconnection boundary.
+
+### Implemented scope
+
+- Separate bounded atomic workspace/service records, fresh session generations, original setup snapshots, and command/stop-command capabilities flushed before process creation.
+- Private owner/SYSTEM Windows jobs with random global names, atomic creation-time assignment, rejection of existing objects on new launch, and recovery through original capabilities rather than process names or PIDs.
+- One extra query-only Rust command keeper per launching host. It confirms its retained job handle before command creation, handles creation interrupted by owner death, seals verified quiescence before releasing job names, and exits after its detached jobs finish. It never starts or stops workloads. An empty attached keeper waits without polling.
+- Exclusive-lock replacement of a lost host, preserving the original desktop/window incarnations and original session setup. Recovery launches no apps, services, dependents, or stop commands.
+- Manual stops and recorded successful actions remain intact. Unrecorded action results are unknown; queued starts become stopped; network readiness requires explicit Retry of the same recovered job. Surviving children remain controlled even if their launcher has exited.
+- Interrupted normal-stop commands remain owned and cannot be duplicated by Retry. Explicit Force stop covers the original workload and stop-command jobs.
+- Ended jobs require completion evidence. Missing jobs without a seal, missing/damaged/future records, legacy open-session journals, and lost Compose/mixed sessions fail closed without overwriting ownership evidence. Bootstrap errors reach the manager instead of being hidden behind a generic connection timeout.
+- Clear unavailable-output text for recovered command instances. A new Start after that instance stops captures output again. Once commands are verified quiescent and original windows/desktops are gone, the old session closes for the next deliberate Open.
+
+### Validation
+
+The first actual host-crash test failed with surviving children after the last host job handle closed. A separate native Windows probe reproduced the loss of the job's namespace entry while the workload remained alive. The implementation now retains query handles in the separate keeper; a saved name alone is never treated as proof of termination.
+
+`recovery-check --exercise` passed an actual creation-handle-scoped host kill, child-only survival, original desktop and external window assignment, original shutdown instructions after saved setup changes, manual stops, completed actions, ended jobs, cancelled queued dependents, network readiness Retry without replacement, recovered normal Stop, explicit Force/Start, and no duplicate starts. A surviving stop command remained owned and was not launched again. Future workspace records were preserved. A second host loss after verified command shutdown and removal of only the fixture's window/desktop left the project closed. This models resource loss after verified quiescence; it does not establish sudden reboot/logoff recovery.
+
+`cargo test --locked --offline` passed all 30 tests, including native job-name collision rejection, refusal of a missing unsealed job, ownership-write failure preventing process creation, and preservation of missing/future/damaged/oversized records.
+
+`cargo fmt --check`, the final `cargo build --locked --offline`, and `cargo clippy --locked --offline --all-targets -- -D warnings` passed. Both recovery and session/UI exercises passed again with the final executable. Final inspection confirmed the original two ordered desktops and active desktop, with no Jurabox fixture processes left running. No Docker resources were created or changed by this phase's checks.
+
+The existing multiprocess `session-check --exercise` and its production manager UI passed warm reconnection, retained output, failure retention, remote Force/Start, leave-running exit, and legacy lost-record refusal. `service-check --exercise` passed the existing command, child ownership, bounded-output, readiness, dependency, stop-failure, and retry cases. Fixtures used private settings and finite workloads.
+
+### Remaining work
+
+Docker/mixed-session crash recovery needs durable engine/container creation evidence and frozen setup. Sudden reboot/logoff can lose both a keeper and an unsealed job; those records remain blocked until reliable boot/session evidence or an explicit resolution flow is implemented. No actual reboot/logoff test was performed. Automatic orphan-record/snapshot cleanup, durable bounded output, helper/update coordination, and release resource measurements remain open.
+
+Inactivity timers, Keep running, lock/sleep handling, return-during-stop, environment override forms, and broader app/elevation/scaling pilots remain. Stored inactivity settings still do not stop workloads.

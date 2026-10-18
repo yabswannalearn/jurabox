@@ -17,6 +17,7 @@ mod coordination;
 mod fixture;
 mod probe;
 mod readiness_check;
+mod recovery;
 pub(crate) use check::fixture_config;
 pub use check::run as check;
 pub use fixture::run as fixture;
@@ -44,7 +45,7 @@ pub struct View {
     pub can_stop: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Status {
     Pending,
     Waiting,
@@ -75,6 +76,11 @@ struct Entry {
     last_probe: Instant,
     preflight_clear: bool,
     compose: Option<compose::Runtime>,
+    record: Option<crate::recovery::Record>,
+    job: Option<Uuid>,
+    stop_job: Option<Uuid>,
+    recovered: bool,
+    record_error: Option<String>,
 }
 
 fn active(process: &Option<ManagedProcess>) -> bool {
@@ -201,6 +207,12 @@ impl Entry {
                 Status::Running | Status::Starting | Status::NotReady
             )
         {
+            if !live && self.process.as_ref().is_some_and(ManagedProcess::recovered) {
+                self.status = Status::Failed;
+                self.ready = false;
+                self.readiness_deadline = None;
+                self.detail = "The recovered command job ended. Its exit code is unavailable; Retry requires your choice.".into();
+            }
             match self
                 .process
                 .as_ref()
@@ -249,6 +261,7 @@ impl Entry {
             .into_iter()
             .flatten()
             .all(|process| !process.output_pending());
+        self.record_error = self.persist().err().map(|error| format!("{error:#}"));
     }
 
     fn spawn_probe(&mut self, preflight: bool) {
@@ -383,7 +396,27 @@ impl Entry {
             .start
             .arguments
             .replace("{folder}", &self.folder.to_string_lossy());
-        match ManagedProcess::start(&self.config.start.executable, &arguments, &self.folder) {
+        self.recovered = false;
+        self.job = self.record.as_ref().map(|_| Uuid::new_v4());
+        self.stop_job = None;
+        self.status = Status::Starting;
+        if let Err(error) = self.persist() {
+            self.status = Status::Failed;
+            self.detail = format!("Cannot record ownership; command launch blocked: {error:#}");
+            bail!("{}", self.detail);
+        }
+        let launch = if let Some(claim) = self.job {
+            ManagedProcess::start_recorded(
+                &self.config.start.executable,
+                &arguments,
+                &self.folder,
+                claim,
+                &self.record.as_ref().unwrap().claim_path(claim),
+            )
+        } else {
+            ManagedProcess::start(&self.config.start.executable, &arguments, &self.folder)
+        };
+        match launch {
             Ok(process) => {
                 self.detail = "Command started. Readiness: process running.".into();
                 self.process = Some(process);
@@ -405,6 +438,9 @@ impl Entry {
                 Ok(format!("{} started.", self.config.name))
             }
             Err(error) => {
+                // A failed CreateProcess path never returned a live workload.
+                // Do not leave an unlaunched capability as uncertain ownership.
+                self.job = None;
                 self.status = Status::Failed;
                 self.detail = format!("{error:#}");
                 Err(error).with_context(|| format!("Cannot start {}", self.config.name))
@@ -443,12 +479,34 @@ impl Entry {
         let arguments = stop
             .arguments
             .replace("{folder}", &self.folder.to_string_lossy());
-        match ManagedProcess::start(&stop.executable, &arguments, &self.folder) {
+        let executable = stop.executable.clone();
+        self.stop_job = self.record.as_ref().map(|_| Uuid::new_v4());
+        self.status = Status::Stopping;
+        if let Err(error) = self.persist() {
+            self.status = Status::StopFailed;
+            self.detail = format!(
+                "Cannot record stop-command ownership; nothing new was launched: {error:#}"
+            );
+            bail!("{}", self.detail);
+        }
+        let launch = if let Some(claim) = self.stop_job {
+            ManagedProcess::start_recorded(
+                &executable,
+                &arguments,
+                &self.folder,
+                claim,
+                &self.record.as_ref().unwrap().claim_path(claim),
+            )
+        } else {
+            ManagedProcess::start(&executable, &arguments, &self.folder)
+        };
+        match launch {
             Ok(process) => {
                 self.stop_process = Some(process);
                 self.capture_drained = false;
             }
             Err(error) => {
+                self.stop_job = None;
                 self.status = Status::StopFailed;
                 self.detail = format!(
                     "Cannot run the stop command: {error:#}. The workload remains managed."
@@ -529,12 +587,26 @@ impl Entry {
                 Status::Stopped => "Stopped",
             }
             .into(),
-            detail: self.detail.clone(),
-            output,
-            error: matches!(
-                self.status,
-                Status::Failed | Status::StopFailed | Status::NotReady
-            ),
+            detail: if let Some(error) = &self.record_error {
+                format!(
+                    "{} Cannot save recovery state: {error}. Keep Jurabox open.",
+                    self.detail
+                )
+            } else {
+                self.detail.clone()
+            },
+            output: if self.recovered {
+                format!(
+                    "[Command output is unavailable for this recovered instance. A new Start after it stops will capture output again.]\n{output}"
+                )
+            } else {
+                output
+            },
+            error: self.record_error.is_some()
+                || matches!(
+                    self.status,
+                    Status::Failed | Status::StopFailed | Status::NotReady
+                ),
             live,
             retained: self
                 .compose
@@ -591,6 +663,11 @@ impl Services {
                     } else {
                         None
                     },
+                    record: None,
+                    job: None,
+                    stop_job: None,
+                    recovered: false,
+                    record_error: None,
                 })
             })
             .collect::<Result<_>>()?;

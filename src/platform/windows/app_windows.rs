@@ -16,7 +16,8 @@ use windows::{
     core::PWSTR,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppWindow {
     pub handle: isize,
     pub process: u32,
