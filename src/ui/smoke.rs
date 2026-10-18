@@ -82,7 +82,7 @@ pub fn run() -> Result<()> {
     let mut original_id = None;
     let mut selected_windows_app = None;
     let started = Instant::now();
-    let timeout = Duration::from_secs(45);
+    let timeout = Duration::from_secs(60);
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
             let mut run_step = || -> Result<bool> {
             ensure!(started.elapsed() < timeout, "UI check timed out at step {step}");
@@ -318,6 +318,61 @@ pub fn run() -> Result<()> {
                 26 => {
                     snapshot(&window, &artifacts.join("friendly-apps.png"))?;
                     println!("PASS installed-app discovery, friendly-name search, empty results, app/browser selection, Windows app IDs, collapsed Advanced, save/reload and cancel without edits");
+                    window.invoke_new_project();
+                    window.set_project_name("Zed project example".into());
+                    window.set_project_folder(folder.to_string_lossy().into_owned().into());
+                    window.set_dirty(true);
+                    window.invoke_open_app_picker(false);
+                    window.set_app_search("Zed".into()); window.invoke_search_apps();
+                }
+                27 => {
+                    let index = window.get_installed_apps().iter().position(|row| crate::projects::is_zed(std::path::Path::new(row.executable.as_str()))).context("Zed was not found on this pilot host")?;
+                    window.invoke_choose_app(index as i32);
+                    let model = window.get_apps();
+                    let mut app = model.row_data(0).context("Zed selection did not add a row")?;
+                    ensure!(app.zed && !app.advanced && app.folder_mode == 0, "Zed project form was not detected or changed default launch behavior");
+                    app.folder_mode = 1;
+                    model.set_row_data(0, app);
+                    window.invoke_save_project();
+                }
+                28 => {
+                    ensure!(read()?.projects.last().unwrap().apps[0].open_folder == Some(crate::projects::OpenFolder::Project), "use-project-folder choice did not persist");
+                    let model = window.get_apps(); let mut app = model.row_data(0).unwrap();
+                    ensure!(app.zed && app.folder_mode == 1 && !app.advanced, "Zed choice did not reload with Advanced collapsed");
+                    app.advanced = true; model.set_row_data(0, app);
+                    window.window().set_size(slint::LogicalSize::new(1040., 740.));
+                    window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -180. })?;
+                }
+                29 => {
+                    snapshot(&window, &artifacts.join("zed-project-folder.png"))?;
+                    let custom = folder.join("Another code project");
+                    std::fs::create_dir(&custom)?;
+                    let model = window.get_apps(); let mut app = model.row_data(0).unwrap();
+                    app.folder_mode = 2; app.editor_folder = custom.to_string_lossy().into_owned().into();
+                    model.set_row_data(0, app); window.set_dirty(true); window.invoke_save_project();
+                }
+                30 => {
+                    ensure!(read()?.projects.last().unwrap().apps[0].open_folder == Some(crate::projects::OpenFolder::Custom(folder.join("Another code project"))), "custom folder did not persist");
+                    let model = window.get_apps(); let mut app = model.row_data(0).unwrap();
+                    ensure!(app.folder_mode == 2 && app.editor_folder.contains("Another code project"), "custom folder did not reload");
+                    app.advanced = true; model.set_row_data(0, app);
+                    window.window().set_size(slint::LogicalSize::new(820., 650.));
+                }
+                31 => {
+                    snapshot(&window, &artifacts.join("zed-custom-folder-compact.png"))?;
+                    let model = window.get_apps(); let mut app = model.row_data(0).unwrap();
+                    app.folder_mode = 1; model.set_row_data(0, app);
+                    window.set_project_folder("".into()); window.set_dirty(true); window.invoke_save_project();
+                    ensure!(window.get_notice_error() && window.get_dirty(), "missing project folder was silently accepted");
+                    window.invoke_discard_changes();
+                    ensure!(window.get_apps().row_data(0).unwrap().folder_mode == 2, "discard lost the saved custom folder");
+                    let model = window.get_apps(); let mut app = model.row_data(0).unwrap();
+                    app.folder_mode = 0; model.set_row_data(0, app);
+                    window.set_dirty(true); window.invoke_save_project();
+                }
+                32 => {
+                    ensure!(read()?.projects.last().unwrap().apps[0].open_folder.is_none(), "Open Zed normally did not clear folder launch selection");
+                    println!("PASS Zed detection, Advanced-only project selection, default unchanged, project/custom folder save/reload, missing-folder validation, discard and normal-launch opt-out");
                     window.invoke_quit(); return Ok(true);
                 }
                 _ => bail!("unexpected UI check step"),

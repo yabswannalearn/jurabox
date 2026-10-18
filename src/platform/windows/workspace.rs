@@ -372,6 +372,7 @@ fn configured_apps(project: &Project) -> Vec<AppConfig> {
     if let Some(browser) = &project.browser {
         // A stable reserved ID is local to each session, never a shared service identity.
         entries.push(AppConfig {
+            open_folder: None,
             app_id: None,
             id: Uuid::nil(),
             name: "Project browser".into(),
@@ -388,13 +389,19 @@ fn same_launch(left: &AppConfig, right: &AppConfig) -> bool {
     left.id == right.id
         && left.executable == right.executable
         && left.app_id == right.app_id
+        && left.open_folder == right.open_folder
         && left.arguments == right.arguments
         && left.new_console == right.new_console
         && left.shared == right.shared
 }
 
 fn launch_app(config: &AppConfig, project: &Project) -> Result<Option<AppWindow>> {
-    let executable_key = app_windows::path_key(&config.executable);
+    let (executable, window_executable) = if config.open_folder.is_some() {
+        apps::zed_launch_paths(&config.executable)?
+    } else {
+        (config.executable.clone(), config.executable.clone())
+    };
+    let executable_key = app_windows::path_key(&window_executable);
     ensure!(
         config.app_id.is_some() || config.executable.is_file(),
         "Executable not found: {}",
@@ -429,22 +436,12 @@ fn launch_app(config: &AppConfig, project: &Project) -> Result<Option<AppWindow>
         };
         apps::activate(app_id, &arguments)?;
     } else {
-        let mut command = Command::new(&config.executable);
+        let mut command = Command::new(&executable);
         if config.id.is_nil() {
             let browser = project.browser.as_ref().context("Missing browser setup.")?;
             command.arg("--new-window").args(&browser.urls);
         } else {
-            let mut args = apps::parse_arguments(&config.arguments)?;
-            for argument in &mut args {
-                if argument.contains("{folder}") {
-                    let folder = project
-                        .folder
-                        .as_ref()
-                        .context("This app uses {folder}; choose a project folder first.")?;
-                    *argument = argument.replace("{folder}", &folder.to_string_lossy());
-                }
-            }
-            command.args(args);
+            command.args(apps::launch_arguments(config, project)?);
         }
         if let Some(folder) = &project.folder {
             command.current_dir(folder);

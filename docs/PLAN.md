@@ -28,6 +28,7 @@ Provide one central Jurabox management window for all projects, accessible from 
 - Show service state and recent output, project countdowns, Keep running badges, failures, and actions needed.
 - Show Changes pending when saved settings differ from the running session's setup.
 - Add apps by their Windows display names through a searchable, scrollable picker. Fill in launch details automatically; keep paths, arguments, and console controls under collapsed Advanced. Browse also accepts ordinary Start Menu shortcuts. The browser chooser lists Chrome and Edge by name. See the [app selection decision](adr/0009-select-installed-apps-by-name.md).
+- For Zed, Advanced includes **Project to open**: use the Jurabox project's folder, choose another folder, or open Zed normally. A selected folder opens in its own window on the next launch. See the [Zed project decision](adr/0010-choose-a-zed-project-in-advanced.md).
 - Add services explicitly; automatic discovery from project files is deferred.
 - A command requiring a working folder must have an explicit location or use the project's configured folder. A folderless project does not imply an arbitrary working directory.
 

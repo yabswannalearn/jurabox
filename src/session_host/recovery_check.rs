@@ -20,6 +20,7 @@ pub fn run() -> Result<()> {
     let mut project = Project::from_form(None, &format!("Recovery {}", Uuid::new_v4()), "", None)?;
     let mut probe = crate::platform::OwnedProbe::start()?;
     project.apps.push(crate::projects::AppConfig {
+        open_folder: None,
         app_id: None,
         id: Uuid::new_v4(),
         name: "Recovery test window".into(),

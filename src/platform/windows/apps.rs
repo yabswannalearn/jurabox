@@ -207,6 +207,60 @@ pub fn parse_arguments(value: &str) -> Result<Vec<String>> {
     }
 }
 
+pub fn launch_arguments(
+    config: &crate::projects::AppConfig,
+    project: &crate::projects::Project,
+) -> Result<Vec<String>> {
+    if let Some(folder) = config.folder_to_open(project.folder.as_deref())? {
+        config.validate()?;
+        anyhow::ensure!(
+            folder.is_dir(),
+            "The project folder for {} is unavailable: {}. Choose an existing folder in Advanced.",
+            config.name,
+            folder.display()
+        );
+        // Use the editor's documented new-window flag and a separate argument.
+        // Windows quoting is handled by Command; spaces never split the path.
+        return Ok(vec!["-n".into(), folder.to_string_lossy().into_owned()]);
+    }
+    let mut arguments = parse_arguments(&config.arguments)?;
+    for argument in &mut arguments {
+        if argument.contains("{folder}") {
+            let folder = project
+                .folder
+                .as_ref()
+                .context("This app uses {folder}; choose a project folder first.")?;
+            *argument = argument.replace("{folder}", &folder.to_string_lossy());
+        }
+    }
+    Ok(arguments)
+}
+
+pub fn zed_launch_paths(executable: &Path) -> Result<(PathBuf, PathBuf)> {
+    let directory = executable
+        .parent()
+        .context("Cannot find Zed's installation folder.")?;
+    let (launcher, application) = if directory
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+    {
+        (
+            executable.to_path_buf(),
+            directory
+                .parent()
+                .context("Cannot find Zed's installation folder.")?
+                .join("Zed.exe"),
+        )
+    } else {
+        (directory.join("bin/Zed.exe"), executable.to_path_buf())
+    };
+    anyhow::ensure!(
+        launcher.is_file() && application.is_file(),
+        "Zed's project launcher is missing. Repair or reinstall Zed, or choose Open Zed normally in Advanced."
+    );
+    Ok((launcher, application))
+}
+
 pub fn pick_path(owner: HWND, folder: bool) -> Result<Option<PathBuf>> {
     // The dialog is modal and uses the management window as its owner. Its
     // native modal loop handles interaction while the user chooses a path.
@@ -302,6 +356,66 @@ pub fn start_console(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn zed_folder_launch_uses_the_bundled_cli_and_matches_the_gui_executable() {
+        let root = tempfile::tempdir().unwrap();
+        let application = root.path().join("Zed.exe");
+        let launcher = root.path().join("bin/Zed.exe");
+        std::fs::write(&application, "fixture").unwrap();
+        assert!(zed_launch_paths(&application).is_err());
+        std::fs::create_dir(root.path().join("bin")).unwrap();
+        std::fs::write(&launcher, "fixture").unwrap();
+        assert_eq!(
+            zed_launch_paths(&application).unwrap(),
+            (launcher.clone(), application.clone())
+        );
+        assert_eq!(
+            zed_launch_paths(&launcher).unwrap(),
+            (launcher, application)
+        );
+    }
+    #[test]
+    fn zed_project_folders_generate_separate_arguments_and_reject_missing_folders() {
+        use crate::projects::{AppConfig, OpenFolder, Project};
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("Project with spaces");
+        std::fs::create_dir(&folder).unwrap();
+        let custom = root.path().join("Another project");
+        std::fs::create_dir(&custom).unwrap();
+        let mut project =
+            Project::from_form(None, "Editor", &folder.to_string_lossy(), None).unwrap();
+        let mut app = AppConfig {
+            id: uuid::Uuid::new_v4(),
+            name: "Zed".into(),
+            executable: r"C:\Apps\Zed.exe".into(),
+            app_id: None,
+            open_folder: Some(OpenFolder::Project),
+            arguments: String::new(),
+            new_console: false,
+            shared: false,
+        };
+        assert_eq!(
+            launch_arguments(&app, &project).unwrap(),
+            vec!["-n".to_owned(), folder.to_string_lossy().into_owned()]
+        );
+        app.open_folder = Some(OpenFolder::Custom(custom.clone()));
+        project.folder = None;
+        assert_eq!(
+            launch_arguments(&app, &project).unwrap(),
+            vec!["-n".to_owned(), custom.to_string_lossy().into_owned()]
+        );
+        std::fs::remove_dir(&custom).unwrap();
+        assert!(launch_arguments(&app, &project).is_err());
+        app.open_folder = Some(OpenFolder::Project);
+        assert!(launch_arguments(&app, &project).is_err());
+        app.open_folder = None;
+        app.arguments = r#"--new "D:\Some other project""#.into();
+        assert_eq!(
+            launch_arguments(&app, &project).unwrap(),
+            vec!["--new", r"D:\Some other project"]
+        );
+    }
+
     #[test]
     fn native_arguments_preserve_spaces_empty_arguments_and_backslashes() {
         assert_eq!(

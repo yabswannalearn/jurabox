@@ -33,6 +33,8 @@ pub struct AppConfig {
     pub executable: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_folder: Option<OpenFolder>,
     #[serde(default)]
     pub arguments: String,
     #[serde(default)]
@@ -41,7 +43,42 @@ pub struct AppConfig {
     pub shared: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    content = "path",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum OpenFolder {
+    Project,
+    Custom(PathBuf),
+}
+
+pub fn is_zed(executable: &Path) -> bool {
+    executable
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("zed.exe"))
+}
+
 impl AppConfig {
+    pub fn folder_to_open<'a>(
+        &'a self,
+        project_folder: Option<&'a Path>,
+    ) -> Result<Option<&'a Path>> {
+        let folder = match &self.open_folder {
+            None => return Ok(None),
+            Some(OpenFolder::Project) => project_folder.context("Choose a folder for this Jurabox project, or choose another folder in Zed's Advanced settings.")?,
+            Some(OpenFolder::Custom(path)) => path.as_path(),
+        };
+        ensure!(
+            folder.is_absolute(),
+            "Choose a full project folder for {}.",
+            self.name
+        );
+        Ok(Some(folder))
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(!self.name.trim().is_empty(), "Give each app a name.");
         if let Some(id) = &self.app_id {
@@ -76,6 +113,26 @@ impl AppConfig {
             !self.arguments.contains('\0'),
             "App arguments cannot contain a null character."
         );
+        if let Some(folder) = &self.open_folder {
+            ensure!(
+                self.app_id.is_none() && is_zed(&self.executable),
+                "Project folder selection currently supports Zed."
+            );
+            ensure!(
+                !self.shared && !self.new_console,
+                "Opening a project in Zed uses its own window. Turn off shared app and console mode."
+            );
+            ensure!(
+                self.arguments.trim().is_empty(),
+                "Clear Zed's launch arguments to use Project to open, or choose Open Zed normally."
+            );
+            if let OpenFolder::Custom(path) = folder {
+                ensure!(
+                    path.is_absolute(),
+                    "Choose the project folder to open in Zed."
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -150,6 +207,7 @@ impl Project {
         let mut ids = std::collections::HashSet::new();
         for app in &self.apps {
             app.validate()?;
+            app.folder_to_open(self.folder.as_deref())?;
             ensure!(
                 !app.id.is_nil(),
                 "Each app entry needs a nonempty identity."
@@ -181,7 +239,7 @@ pub struct ProjectFile {
 impl Default for ProjectFile {
     fn default() -> Self {
         Self {
-            version: 6,
+            version: 7,
             projects: Vec::new(),
         }
     }
@@ -206,7 +264,7 @@ impl ProjectFile {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 6,
+            self.version == 7,
             "This project file uses unsupported version {}. Keep the file and use a compatible Jurabox version.",
             self.version
         );
@@ -263,8 +321,8 @@ impl ProjectStore {
                 self.path.display()
             )
         })?;
-        if matches!(data.version, 1..=5) {
-            data.version = 6;
+        if matches!(data.version, 1..=6) {
+            data.version = 7;
         }
         data.validate()?;
         Ok(data)
@@ -342,7 +400,7 @@ mod tests {
         fs::write(&path, &old).unwrap();
         let store = ProjectStore::new(path.clone());
         let data = store.load().unwrap();
-        assert_eq!(data.version, 6);
+        assert_eq!(data.version, 7);
         assert!(data.projects[0].apps.is_empty() && data.projects[0].browser.is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         store.save(&data).unwrap();
@@ -355,6 +413,7 @@ mod tests {
         let store = ProjectStore::new(directory.path().join("projects.json"));
         let mut entry = project("Tools");
         entry.apps.push(AppConfig {
+            open_folder: None,
             app_id: None,
             id: Uuid::new_v4(),
             name: "Editor".into(),
@@ -388,12 +447,79 @@ mod tests {
     }
 
     #[test]
+    fn zed_folder_choices_round_trip_without_changing_older_app_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("projects.json");
+        let store = ProjectStore::new(path.clone());
+        let mut entry = project("Editor");
+        entry.folder = Some(directory.path().into());
+        entry.apps.push(AppConfig {
+            id: Uuid::new_v4(),
+            name: "My editor".into(),
+            executable: r"C:\Apps\ZED.EXE".into(),
+            app_id: None,
+            open_folder: Some(OpenFolder::Project),
+            arguments: String::new(),
+            new_console: false,
+            shared: false,
+        });
+        let mut data = ProjectFile::default();
+        data.upsert(entry);
+        store.save(&data).unwrap();
+        assert_eq!(store.load().unwrap(), data);
+        data.projects[0].apps[0].open_folder = Some(OpenFolder::Custom(directory.path().into()));
+        data.projects[0].folder = None;
+        store.save(&data).unwrap();
+        assert_eq!(store.load().unwrap(), data);
+        data.projects[0].apps[0].open_folder = Some(OpenFolder::Project);
+        assert!(store.save(&data).is_err());
+        data.projects[0].apps[0].open_folder = None;
+        data.projects[0].apps[0].arguments = r#"--new "D:\Existing setup""#.into();
+        let mut previous = serde_json::to_value(&data).unwrap();
+        previous["version"] = 6.into();
+        let bytes = serde_json::to_vec(&previous).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(store.load().unwrap(), data);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn editor_folder_selection_rejects_other_apps_shared_windows_and_conflicting_arguments() {
+        let mut app = AppConfig {
+            id: Uuid::new_v4(),
+            name: "Zed".into(),
+            executable: r"C:\Apps\zed.exe".into(),
+            app_id: None,
+            open_folder: Some(OpenFolder::Custom(r"D:\Project".into())),
+            arguments: String::new(),
+            new_console: false,
+            shared: false,
+        };
+        assert!(app.validate().is_ok());
+        app.shared = true;
+        assert!(app.validate().is_err());
+        app.shared = false;
+        app.new_console = true;
+        assert!(app.validate().is_err());
+        app.new_console = false;
+        app.arguments = "--reuse".into();
+        assert!(app.validate().is_err());
+        app.arguments.clear();
+        app.executable = r"C:\Apps\other.exe".into();
+        assert!(app.validate().is_err());
+        app.executable = r"C:\Apps\zed.exe".into();
+        app.open_folder = Some(OpenFolder::Custom("relative".into()));
+        assert!(app.validate().is_err());
+    }
+
+    #[test]
     fn windows_apps_round_trip_and_old_executable_settings_migrate_on_save() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("projects.json");
         let store = ProjectStore::new(path.clone());
         let mut entry = project("Windows apps");
         let app = AppConfig {
+            open_folder: None,
             id: Uuid::new_v4(),
             name: "Example".into(),
             executable: PathBuf::new(),
@@ -442,11 +568,11 @@ mod tests {
     #[test]
     fn unsupported_versions_and_duplicate_ids_are_rejected() {
         let mut data = ProjectFile {
-            version: 7,
+            version: 8,
             ..Default::default()
         };
         assert!(data.validate().is_err());
-        data.version = 6;
+        data.version = 7;
         let entry = project("First");
         data.projects.extend([entry.clone(), entry]);
         assert!(data.validate().is_err());
