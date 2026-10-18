@@ -1,5 +1,7 @@
 mod platform;
 mod projects;
+#[cfg(windows)]
+mod services;
 mod ui;
 
 use anyhow::{Result, bail};
@@ -7,12 +9,20 @@ use std::process::ExitCode;
 
 #[derive(Debug, PartialEq)]
 enum Command {
-    App { hidden: bool },
+    App {
+        hidden: bool,
+    },
     Status,
     DesktopCheck,
     UiCheck,
     WorkspaceCheck,
     AssignmentCheck,
+    ServiceCheck,
+    ServiceUiCheck,
+    ServiceFixture {
+        mode: String,
+        folder: std::path::PathBuf,
+    },
     ProbeWindow,
     Help,
 }
@@ -30,10 +40,20 @@ fn parse_command(args: &[String]) -> Result<Command> {
         ["ui-check"] => Ok(Command::UiCheck),
         ["workspace-check", "--exercise"] => Ok(Command::WorkspaceCheck),
         ["assignment-check", "--exercise"] => Ok(Command::AssignmentCheck),
+        ["service-check", "--exercise"] => Ok(Command::ServiceCheck),
+        ["service-ui-check", "--exercise"] => Ok(Command::ServiceUiCheck),
+        ["_service-fixture", mode, folder] => Ok(Command::ServiceFixture {
+            mode: (*mode).into(),
+            folder: (*folder).into(),
+        }),
         ["_probe-window"] => Ok(Command::ProbeWindow),
         ["desktop-check", "--exercise"] => Ok(Command::DesktopCheck),
         ["--help"] | ["-h"] | ["help"] => Ok(Command::Help),
-        ["desktop-check"] | ["workspace-check"] | ["assignment-check"] => bail!(
+        ["desktop-check"]
+        | ["workspace-check"]
+        | ["assignment-check"]
+        | ["service-check"]
+        | ["service-ui-check"] => bail!(
             "This check requires --exercise: it temporarily switches desktops and opens test windows"
         ),
         _ => bail!("unknown command; run jurabox --help for usage"),
@@ -49,6 +69,28 @@ fn run() -> Result<()> {
         Command::UiCheck => ui::check(),
         Command::WorkspaceCheck => platform::workspace_check(),
         Command::AssignmentCheck => ui::assignment_check(),
+        Command::ServiceUiCheck => ui::service_check(),
+        Command::ServiceCheck => {
+            #[cfg(windows)]
+            {
+                services::check()
+            }
+            #[cfg(not(windows))]
+            {
+                bail!("Service checks require Windows 11.")
+            }
+        }
+        Command::ServiceFixture { mode, folder } => {
+            #[cfg(windows)]
+            {
+                services::fixture(&mode, &folder)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (mode, folder);
+                bail!("Service fixtures require Windows 11.")
+            }
+        }
         Command::ProbeWindow => platform::probe_window(),
         Command::Help => {
             println!(
@@ -60,6 +102,8 @@ fn run() -> Result<()> {
                  jurabox ui-check                   Check UI using temporary settings\n\n\
                  jurabox workspace-check --exercise Verify app launching and workspace switching\n\n\
                  jurabox assignment-check --exercise Verify manual window assignment with an owned fixture\n\n\
+                 jurabox service-check --exercise   Verify owned command services with finite fixtures\n\n\
+                 jurabox service-ui-check --exercise Verify service controls in a temporary workspace\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );
@@ -96,6 +140,8 @@ mod tests {
         assert!(parse_command(&args(&["desktop-check"])).is_err());
         assert!(parse_command(&args(&["workspace-check"])).is_err());
         assert!(parse_command(&args(&["assignment-check"])).is_err());
+        assert!(parse_command(&args(&["service-check"])).is_err());
+        assert!(parse_command(&args(&["service-ui-check"])).is_err());
         assert_eq!(
             parse_command(&args(&["workspace-check", "--exercise"])).unwrap(),
             Command::WorkspaceCheck

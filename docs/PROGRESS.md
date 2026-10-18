@@ -134,7 +134,7 @@ The manual-assignment follow-up is recorded below. App compatibility and later s
 
 ## Milestone 2: Manual window assignment
 
-The user asked to publish the completed phases and continue on 2026-10-18. Foundation commit `f882202` was pushed to `main`. The management UI is [PR #1](https://github.com/yabswannalearn/jurabox/pull/1); the launcher is [PR #2](https://github.com/yabswannalearn/jurabox/pull/2), stacked on the UI branch so each diff contains one phase. Neither PR was merged. The assignment follow-up is developed separately from the launcher branch.
+The user asked to publish the completed phases and continue on 2026-10-18. Foundation commit `f882202` was pushed to `main`. The management UI is [PR #1](https://github.com/yabswannalearn/jurabox/pull/1); the launcher is [PR #2](https://github.com/yabswannalearn/jurabox/pull/2), initially stacked on the UI branch so each diff contained one phase. They and the assignment follow-up [PR #3](https://github.com/yabswannalearn/jurabox/pull/3) were subsequently merged at the user's request, as recorded below.
 
 ### Implemented scope
 
@@ -164,3 +164,38 @@ The existing `ui-check` passed project/app/link persistence, unsaved-edit and fa
 Read-only application inventory found Zed, ChatGPT, Docker Desktop, and Windows Terminal installed on the development host. Installation alone does not establish compatibility. Complete their launch/reuse pilot, including packaged apps, terminal-host behavior, native path pickers, keyboard traversal, scaling, and elevated-window limitations. Runtime persistence and reconnection remain unimplemented.
 
 Next service phase: typed commands/startup actions and Compose workloads with ownership tracking, bounded output, readiness/dependencies, graceful Stop, Retry, and explicit Force stop. Inactivity timers, Keep running, lock/sleep handling, verified reactivation, and recovery follow reliable service ownership.
+
+## Milestone 3: Command services and startup actions
+
+On 2026-10-18 the user requested merging PRs #1, #2, and #3 and starting the next phase. All three passed their GitHub checks and were merged in dependency order with merge commits, preserving the individual phase commits. The resulting main commit is `2af6af4`. This slice starts from that main on `codex/command-services`.
+
+### Implemented scope
+
+- Typed command-service and finite startup-action configuration, explicit working locations, optional normal-stop commands, and per-entry shutdown deadlines.
+- Settings schema 3 with in-memory version 1/2 migration until Save.
+- Native creation-time Windows job assignment with an inherited-handle allowlist. Ownership uses retained creation handles, including children that survive their launcher. No process-name, port, or PID-based adoption.
+- Combined stdout/stderr capture with a 64 KiB tail per start/stop command, fixed-size reads, omitted-output markers, and a final-drain latch before returning to event-only idle behavior.
+- Session status/output and manual Start/Retry, normal Stop, and explicit Force stop. Startup action success is distinct from an unexpectedly exited command service.
+- Close and deliberate relaunch use the old session's shutdown setup and retain that session on stop failure. Saving does not alter live commands; switching does not reopen a manually stopped service.
+- Stop services and quit; failures keep Jurabox open. Ordinary Quit is guarded while managed jobs are live because output capture is currently attached to the manager process.
+- Separate core service and real UI exercises with private temporary configuration and finite diagnostic workloads.
+
+The [workload ADR](adr/0004-own-foreground-command-workloads.md) records ownership, output limits, shutdown behavior, and the temporary delivery boundary around leaving workloads running after exit.
+
+### Validation
+
+`cargo fmt --check`, `cargo build --locked`, `cargo test --locked` (15 tests), and `cargo clippy --locked --all-targets -- -D warnings` passed on the Windows 11 development host. Unit coverage includes version 1/2 migration without rewriting on load, typed workload persistence, explicit working-location/stop-command validation, and bounded output across chunks without newlines.
+
+The core `service-check --exercise` passed partial startup, finite-action completion versus unexpected service exit, manual Retry without restart loops, prevention of duplicate live jobs, explicit working folders, normal Stop/Start, and missing/failed/timed-out stop retention. It also passed surviving children after launcher exit, scoped process-tree Force stop while another job remained live, a still-running timed-out stop command, large Unicode output with no line breaks, and final output drainage before returning to event-only idle behavior.
+
+Real CMD and Windows PowerShell startup actions passed raw shell argument handling and combined stdout/stderr capture. Their native launches deliberately used mixed-separator executable paths; the temporary working folders included spaces and Unicode characters.
+
+The real `service-ui-check --exercise` passed form persistence, startup completion/output, manual Stop/Start, Switch respecting manual stops, saved/session setup separation, old stop instructions during failed relaunch, Close and quit retaining a failed workload, explicit Force stop, successful relaunch, and normal stop-and-quit. The development slice's Quit guard was exercised. Compact service-editor, live-output, and stop-failure snapshots were inspected; the log tail is positioned at the top of its output area and long lines wrap within it.
+
+Existing `ui-check`, `assignment-check --exercise`, and `workspace-check --exercise` passed after the service integration. The workspace exercise included real Edge browser links and the real CMD/terminal-host fixture. These checks restored the original ordered desktop GUIDs and original active desktop, and closed their owned windows/workloads. No release-performance or broad installed-application compatibility claim follows from these tests.
+
+### Remaining work
+
+This is the first slice of milestone 3. Compose-specific ownership and non-escalating shutdown, TCP/HTTP readiness and deadlines, dependency coordination, environment overrides, and richer progress/cancellation remain. Durable output, the accepted leave-running exit, persistence, and verified reconnection require further lifecycle work. Inactivity auto-stop is not active, and existing saved inactivity values remain configuration only.
+
+The ordinary Quit guard is temporary; it does not remove the accepted leave-running exit from the product plan. No crash-survival or reconnection guarantee is made by this slice. Full editor/ChatGPT/Docker compatibility, elevation, scaling, keyboard/accessibility, and release performance pilots remain open.

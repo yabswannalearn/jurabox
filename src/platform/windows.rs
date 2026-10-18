@@ -2,6 +2,7 @@ mod app_windows;
 pub mod apps;
 mod fixture;
 mod instance;
+pub mod managed_process;
 mod probe_window;
 pub use fixture::OwnedProbe;
 pub mod workspace;

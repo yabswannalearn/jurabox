@@ -5,6 +5,8 @@ export struct AppDraft { id: string, name: string, executable: string, arguments
 export struct InstalledRow { name: string, executable: string }
 export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool }
 export struct WindowOptionRow { id: string, title: string, executable: string, assignment: string, available: bool }
+export struct WorkloadDraft { id: string, name: string, one-shot: bool, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int }
+export struct WorkloadRow { id: string, name: string, kind: string, status: string, detail: string, output: string, error: bool, live: bool, can-start: bool }
 
 export component AppTray inherits SystemTrayIcon {
     icon: @image-url("assets/jurabox.svg");
@@ -12,12 +14,14 @@ export component AppTray inherits SystemTrayIcon {
     callback show-window();
     callback new-project();
     callback quit();
+    callback stop-and-quit();
     clicked => { root.show-window(); }
     Menu {
         MenuItem { title: "Show Jurabox"; activated => { root.show-window(); } }
         MenuItem { title: "New project"; activated => { root.new-project(); } }
         MenuSeparator {}
         MenuItem { title: "Quit Jurabox"; activated => { root.quit(); } }
+        MenuItem { title: "Stop services and quit"; activated => { root.stop-and-quit(); } }
     }
 }
 
@@ -39,6 +43,9 @@ export component AppWindow inherits Window {
     private property <bool> form-enabled: !root.busy && !root.window-picker-visible;
     in property <bool> workspace-busy;
     in property <bool> session-open;
+    in property <bool> managed-live;
+    in-out property <[WorkloadDraft]> workloads;
+    in property <[WorkloadRow]> session-workloads;
     in property <[SessionAppRow]> session-apps;
     in property <[WindowOptionRow]> window-options;
     in-out property <bool> window-picker-visible;
@@ -82,6 +89,11 @@ export component AppWindow inherits Window {
     callback open-project();
     callback relaunch-project();
     callback close-project();
+    callback add-workload(bool);
+    callback remove-workload(int);
+    callback browse-workload(int, int);
+    callback service-action(string, string);
+    callback stop-and-quit();
     callback show-window-picker(string);
     callback refresh-window-picker();
     callback filter-windows();
@@ -100,6 +112,7 @@ export component AppWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: "Hide to tray"; activated => { root.hide-window(); } }
             MenuItem { title: "Quit Jurabox"; activated => { root.quit(); } }
+            MenuItem { title: "Stop services and quit"; activated => { root.stop-and-quit(); } }
         }
         Menu {
             title: "Help";
@@ -198,6 +211,42 @@ export component AppWindow inherits Window {
                         spacing: 12px;
                         padding-right: 8px;
                         alignment: start;
+                        if root.session-open && root.session-workloads.length > 0: VerticalLayout {
+                            spacing: 10px;
+                            Text { text: "Session services"; font-size: 17px; font-weight: 600; color: #22313d; }
+                            Text { text: "Controls use this session's setup. Saved edits take effect on relaunch."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                            for service in root.session-workloads: Rectangle {
+                                background: service.error ? #fff1ef : #f3f6f8;
+                                border-radius: 6px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        Text { text: service.name; color: #22313d; font-weight: 600; overflow: elide; }
+                                        Text { text: service.status; color: service.error ? #922d25 : #087f8c; horizontal-alignment: right; font-weight: 600; }
+                                    }
+                                    Text { text: service.kind; font-size: 11px; color: #65778d; }
+                                    Text { text: service.detail; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 8px;
+                                        Button { text: service.status == "Completed" ? "Run again" : (service.error ? "Retry" : "Start"); enabled: service.can-start && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "start"); } }
+                                        Button { text: "Stop"; enabled: service.live && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "stop"); } }
+                                        Button { text: "Force stop"; enabled: service.live && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "force"); } }
+                                    }
+                                    if service.output != "": Rectangle {
+                                        height: 140px;
+                                        background: #22313d;
+                                        border-radius: 4px;
+                                        ScrollView {
+                                            x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px;
+                                            Text { x: 0px; y: 0px; width: parent.width; text: service.output; color: #e2edf2; font-family: "Consolas"; font-size: 11px; wrap: word-wrap; vertical-alignment: top; }
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle { height: 12px; background: transparent; }
+                        }
                         if root.session-open: VerticalLayout {
                             spacing: 10px;
                             Text { text: "Workspace windows"; font-size: 17px; font-weight: 600; color: #22313d; }
@@ -288,6 +337,52 @@ export component AppWindow inherits Window {
                             TextEdit { text <=> root.browser-urls; min-height: 100px; preferred-height: 100px; vertical-stretch: 0; placeholder-text: "One https:// link per line"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                         }
                         Rectangle { height: 20px; background: transparent; }
+                        Text { text: "Services and startup actions"; font-size: 17px; font-weight: 600; color: #22313d; }
+                        Text { text: "A command service keeps running; a startup action finishes. Commands run in the background without an interactive terminal."; color: #65778d; font-size: 12px; wrap: word-wrap; }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button { text: "+ Command service"; enabled: root.form-enabled; clicked => { root.add-workload(false); } }
+                            Button { text: "+ Startup action"; enabled: root.form-enabled; clicked => { root.add-workload(true); } }
+                        }
+                        for service[index] in root.workloads: Rectangle {
+                            background: #f3f6f8;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 8px;
+                                HorizontalLayout {
+                                    LineEdit { text <=> service.name; placeholder-text: "Service or action name"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Button { text: "Remove"; enabled: root.form-enabled; clicked => { root.remove-workload(index); } }
+                                }
+                                CheckBox { text: "Finite startup action"; checked <=> service.one-shot; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                                Text { text: "Start command"; color: #22313d; font-size: 12px; }
+                                HorizontalLayout {
+                                    LineEdit { text <=> service.executable; placeholder-text: "Full path to the .exe"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-workload(index, 0); } }
+                                }
+                                LineEdit { text <=> service.arguments; placeholder-text: "Arguments, with Windows quoting"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                Text { text: "Working folder"; color: #22313d; font-size: 12px; }
+                                HorizontalLayout {
+                                    LineEdit { text <=> service.folder; placeholder-text: "Blank uses the project folder"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-workload(index, 1); } }
+                                }
+                                Text { text: "Normal stop command (optional)"; color: #22313d; font-size: 12px; }
+                                HorizontalLayout {
+                                    LineEdit { text <=> service.stop-executable; placeholder-text: "Full .exe path for a normal stop request"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-workload(index, 2); } }
+                                }
+                                LineEdit { text <=> service.stop-arguments; placeholder-text: "Stop arguments; {folder} uses the session's working folder"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Text { text: "Wait up to"; color: #22313d; font-size: 12px; }
+                                    SpinBox { value <=> service.stop-timeout; minimum: 1; maximum: 3600; preferred-width: 90px; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    Text { text: "seconds for normal shutdown"; color: #22313d; font-size: 12px; }
+                                }
+                                Text { text: "Stop leaves the workload running if the command is missing, fails, or times out. Force stop is always explicit."; color: #65778d; font-size: 11px; wrap: word-wrap; }
+                            }
+                        }
+                        Text { text: "Readiness currently checks that the process is running. Recent output is kept in memory with a limit. Configure scripts through CMD, PowerShell, or another explicit shell."; color: #65778d; font-size: 12px; wrap: word-wrap; }
+                        Rectangle { height: 20px; background: transparent; }
                         Text { text: "Inactivity policy"; font-size: 17px; font-weight: 600; color: #22313d; }
                         CheckBox {
                             text: "Enable inactivity auto-stop";
@@ -309,7 +404,7 @@ export component AppWindow inherits Window {
                             }
                             Text { text: "minutes away from this project"; color: #22313d; }
                         }
-                        Text { text: "Inactivity settings are saved for the service phase. GUI apps stay open. Saved changes apply on Open or Relaunch saved setup."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                        Text { text: "Inactivity auto-stop is not active yet. GUI apps stay open. Saved changes apply on the next launch."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                         if root.delete-pending: Rectangle {
                             background: #fff1ef;
                             border-radius: 6px;

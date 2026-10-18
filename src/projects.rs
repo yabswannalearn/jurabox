@@ -7,6 +7,9 @@ use std::{
 };
 use uuid::Uuid;
 
+mod workloads;
+pub use workloads::{CommandSpec, WorkloadConfig, WorkloadKind};
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Project {
@@ -18,6 +21,8 @@ pub struct Project {
     pub apps: Vec<AppConfig>,
     #[serde(default)]
     pub browser: Option<BrowserConfig>,
+    #[serde(default)]
+    pub workloads: Vec<WorkloadConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -110,6 +115,7 @@ impl Project {
             inactivity_minutes,
             apps: Vec::new(),
             browser: None,
+            workloads: Vec::new(),
         };
         project.validate()?;
         Ok(project)
@@ -135,6 +141,13 @@ impl Project {
         if let Some(browser) = &self.browser {
             browser.validate()?;
         }
+        for workload in &self.workloads {
+            workload.validate(self.folder.as_deref())?;
+            ensure!(
+                !workload.id.is_nil() && ids.insert(workload.id),
+                "Each app, service, and startup action needs its own nonempty identity."
+            );
+        }
         Ok(())
     }
 }
@@ -149,7 +162,7 @@ pub struct ProjectFile {
 impl Default for ProjectFile {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             projects: Vec::new(),
         }
     }
@@ -174,7 +187,7 @@ impl ProjectFile {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 2,
+            self.version == 3,
             "This project file uses unsupported version {}. Keep the file and use a compatible Jurabox version.",
             self.version
         );
@@ -226,8 +239,8 @@ impl ProjectStore {
                 self.path.display()
             )
         })?;
-        if data.version == 1 {
-            data.version = 2;
+        if matches!(data.version, 1 | 2) {
+            data.version = 3;
         }
         data.validate()?;
         Ok(data)
@@ -305,7 +318,7 @@ mod tests {
         fs::write(&path, &old).unwrap();
         let store = ProjectStore::new(path.clone());
         let data = store.load().unwrap();
-        assert_eq!(data.version, 2);
+        assert_eq!(data.version, 3);
         assert!(data.projects[0].apps.is_empty() && data.projects[0].browser.is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         store.save(&data).unwrap();
@@ -366,11 +379,11 @@ mod tests {
     #[test]
     fn unsupported_versions_and_duplicate_ids_are_rejected() {
         let mut data = ProjectFile {
-            version: 3,
+            version: 4,
             ..Default::default()
         };
         assert!(data.validate().is_err());
-        data.version = 2;
+        data.version = 3;
         let entry = project("First");
         data.projects.extend([entry.clone(), entry]);
         assert!(data.validate().is_err());

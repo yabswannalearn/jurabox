@@ -2,6 +2,10 @@
 mod assignment_smoke;
 #[cfg(windows)]
 mod launch;
+#[cfg(windows)]
+mod service_forms;
+#[cfg(windows)]
+mod service_smoke;
 mod smoke;
 #[cfg(windows)]
 mod window_picker;
@@ -114,7 +118,10 @@ fn refresh(window: &AppWindow, state: &State) {
     window.set_delete_pending(false);
     window.set_picker_visible(false);
     #[cfg(windows)]
-    launch::refresh_status(window, state);
+    {
+        service_forms::load(window, selected.map(|index| &state.data.projects[index]));
+        launch::refresh_status(window, state);
+    }
 }
 
 fn can_leave_form(window: &AppWindow) -> bool {
@@ -188,6 +195,13 @@ fn request_quit(window: &AppWindow) {
             "Wait for the current operation to finish before quitting.",
             true,
         );
+    } else if window.get_managed_live() {
+        show(window);
+        notice(
+            window,
+            "Managed workloads are running. Choose Stop services and quit, or stop them individually first.",
+            true,
+        );
     } else if can_leave_form(window) {
         let _ = slint::quit_event_loop();
     } else {
@@ -214,6 +228,8 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
     refresh(&window, &state.lock().unwrap());
     #[cfg(windows)]
     launch::setup(&window, state.clone());
+    #[cfg(windows)]
+    service_forms::setup(&window, state.clone());
     #[cfg(windows)]
     window_picker::setup(&window, state.clone());
 
@@ -290,6 +306,11 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
         };
         #[cfg(windows)]
         if let Err(error) = launch::read_apps(&window, &mut project) {
+            notice(&window, &format!("{error:#}"), true);
+            return;
+        }
+        #[cfg(windows)]
+        if let Err(error) = service_forms::read(&window, &mut project) {
             notice(&window, &format!("{error:#}"), true);
             return;
         }
@@ -375,6 +396,12 @@ pub(super) fn create(store: ProjectStore) -> Result<(AppWindow, AppTray)> {
             request_quit(&window);
         }
     });
+    let weak = window.as_weak();
+    tray.on_stop_and_quit(move || {
+        if let Some(window) = weak.upgrade() {
+            window.invoke_stop_and_quit();
+        }
+    });
     Ok((window, tray))
 }
 
@@ -401,6 +428,17 @@ pub fn run(start_hidden: bool) -> Result<()> {
 
 pub fn check() -> Result<()> {
     smoke::run()
+}
+
+pub fn service_check() -> Result<()> {
+    #[cfg(windows)]
+    {
+        service_smoke::run()
+    }
+    #[cfg(not(windows))]
+    {
+        anyhow::bail!("Service UI checks require Windows 11.")
+    }
 }
 
 pub fn assignment_check() -> Result<()> {
