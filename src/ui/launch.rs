@@ -79,6 +79,14 @@ pub(super) fn read_apps(window: &AppWindow, project: &mut Project) -> Result<()>
                 new_console |= resolved.new_console;
             }
             Ok(AppConfig {
+                open_folder: match app.folder_mode {
+                    0 => None,
+                    1 => Some(crate::projects::OpenFolder::Project),
+                    2 => Some(crate::projects::OpenFolder::Custom(PathBuf::from(
+                        app.editor_folder.trim().trim_matches('"'),
+                    ))),
+                    _ => anyhow::bail!("Choose a project to open in Zed's Advanced settings."),
+                },
                 app_id: (!app.app_id.is_empty()).then(|| app.app_id.to_string()),
                 id: Uuid::parse_str(&app.id)?,
                 name: app.name.trim().into(),

@@ -346,3 +346,17 @@ The live `ui-check` passed discovery, keyboard search focus, case-insensitive se
 `cargo fmt --all --check`, `git diff --check`, and `cargo clippy --locked --offline --all-targets -- -D warnings` passed.
 
 `workspace-check --exercise` passed launch attribution, partial failures, shared movement, unchanged relaunch, manual assignment, private/shared conflicts, and restoration of the original desktops. `session-check --exercise` passed warm reconnection, retained logs, the real manager UI, and remote Force/Start/quit flows. Package-specific launch/reuse behavior, elevated windows, and broader scaling/accessibility pilots remain to validate.
+
+## Zed project selection in Advanced
+
+Implemented on 2026-10-18. Per the user's placement request, **Advanced → Project to open** appears for Zed and offers its normal launch, the Jurabox project's folder, or a separately chosen folder. Existing app entries keep normal launch behavior until changed. See the [Zed project ADR](adr/0010-choose-a-zed-project-in-advanced.md).
+
+Folder selection uses an optional typed setting in schema 7, validates project-folder references and absolute custom locations, and checks folder availability before launching. Versions 1–6 migrate without rewriting until Save. Folder mode uses a private editor window, prevents conflicting shared/console/manual-argument settings, and remains part of the original session setup until deliberate relaunch.
+
+Inspection of the installed Windows `Zed.exe --help` and `bin/Zed.exe --help` established that only the bundled CLI exposes `-n`. The adapter launches that CLI with separate new-window/folder arguments and attributes the resulting GUI executable. It reports missing launcher files instead of sending CLI-only flags to the GUI executable.
+
+`cargo test --locked --offline` passed all 38 tests, including the launcher/GUI pair, folder names with spaces, unavailable folders, project/custom folder round trips, old settings preservation, and conflicting launch-mode rejection. Actual interactive Zed launch behavior remains a pilot check; the read-only help inspection does not establish end-to-end window compatibility.
+
+The live `ui-check` passed Zed detection, unchanged default behavior, the Advanced-only form, both folder choices/save/reload, missing-project-folder validation, discard restoration, and normal-launch opt-out. Inspected screenshots at 1040×740 and 820×650 show the selected folder and native picker button. The existing app/browser/project/tray/save-error checks also passed. `workspace-check --exercise` passed existing launch/assignment/sharing/relaunch semantics and restored the original desktops. Formatting and Clippy with warnings denied passed; the Windows executable was built locally.
+
+The packaged Windows GUI-subsystem executable passed the full UI check and the multiprocess session/UI check. One earlier packaged UI run could not register its Windows tray icon; the complete repeat passed. No application code changed between those two runs.

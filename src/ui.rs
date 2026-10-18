@@ -92,6 +92,18 @@ fn refresh(window: &AppWindow, state: &State) {
                 new_console: app.new_console,
                 shared: app.shared,
                 advanced: false,
+                zed: app.app_id.is_none() && crate::projects::is_zed(&app.executable),
+                folder_mode: match &app.open_folder {
+                    None => 0,
+                    Some(crate::projects::OpenFolder::Project) => 1,
+                    Some(crate::projects::OpenFolder::Custom(_)) => 2,
+                },
+                editor_folder: match &app.open_folder {
+                    Some(crate::projects::OpenFolder::Custom(path)) => {
+                        path.to_string_lossy().into_owned().into()
+                    }
+                    _ => "".into(),
+                },
             })
             .collect();
         window.set_apps(ModelRc::new(VecModel::from(apps)));

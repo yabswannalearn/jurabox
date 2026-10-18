@@ -246,7 +246,7 @@ mod tests {
         let original = serde_json::to_string(&old).unwrap();
         fs::write(&path, &original).unwrap();
         let migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 6);
+        assert_eq!(migrated.version, 7);
         assert!(migrated.projects[0].workloads[0].compose.is_none());
         assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
@@ -351,7 +351,7 @@ mod tests {
         fs::write(&path, &original).unwrap();
         let store = ProjectStore::new(path.clone());
         let mut migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 6);
+        assert_eq!(migrated.version, 7);
         assert_eq!(
             migrated.projects[0].workloads[0].readiness,
             Readiness::ProcessRunning
@@ -393,7 +393,7 @@ mod tests {
         );
         fs::write(&path, &old).unwrap();
         let migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 6);
+        assert_eq!(migrated.version, 7);
         assert!(migrated.projects[0].workloads.is_empty());
         assert_eq!(fs::read_to_string(path).unwrap(), old);
     }

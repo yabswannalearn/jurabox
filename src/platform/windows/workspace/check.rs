@@ -102,6 +102,7 @@ pub(super) fn run() -> Result<()> {
     let mut workspaces = Workspaces::default();
     let mut project = Project::from_form(None, "Jurabox launch check", "", Some(15))?;
     project.apps.push(AppConfig {
+        open_folder: None,
         app_id: None,
         id: Uuid::new_v4(),
         name: "Owned test app".into(),
@@ -123,6 +124,7 @@ pub(super) fn run() -> Result<()> {
     project.validate()?;
     // A failed entry must not prevent an independent app from launching.
     let missing = AppConfig {
+        open_folder: None,
         app_id: None,
         id: Uuid::new_v4(),
         name: "Missing test app".into(),

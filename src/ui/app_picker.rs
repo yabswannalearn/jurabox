@@ -26,6 +26,7 @@ fn add(window: &AppWindow, app: apps::InstalledApp) {
         window.set_dirty(true);
     } else {
         let mut drafts = launch::form_apps(window);
+        let zed = app.app_id.is_none() && crate::projects::is_zed(&app.executable);
         drafts.push(AppDraft {
             id: Uuid::new_v4().to_string().into(),
             name: app.name.clone().into(),
@@ -33,6 +34,7 @@ fn add(window: &AppWindow, app: apps::InstalledApp) {
             app_id: app.app_id.unwrap_or_default().into(),
             arguments: app.arguments.into(),
             new_console: app.new_console,
+            zed,
             ..Default::default()
         });
         launch::set_apps(window, drafts);
@@ -159,9 +161,32 @@ pub(super) fn setup(window: &AppWindow) {
                     draft.app_id = "".into();
                     draft.arguments = app.arguments.into();
                     draft.new_console = app.new_console;
+                    draft.zed = crate::projects::is_zed(&app.executable);
+                    draft.folder_mode = 0;
+                    draft.editor_folder = "".into();
                     if draft.name.is_empty() {
                         draft.name = app.name.into();
                     }
+                    launch::set_apps(&window, drafts);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => notice(&window, &format!("{error:#}"), true),
+        }
+    });
+    let weak = window.as_weak();
+    window.on_browse_editor_folder(move |index| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        match launch::pick(&window, true) {
+            Ok(Some(path)) => {
+                let mut drafts = launch::form_apps(&window);
+                if let Some(draft) = drafts.get_mut(index as usize) {
+                    draft.editor_folder = path.to_string_lossy().into_owned().into();
+                    draft.folder_mode = 2;
+                    draft.shared = false;
+                    draft.new_console = false;
                     launch::set_apps(&window, drafts);
                 }
             }

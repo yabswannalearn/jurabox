@@ -1,7 +1,7 @@
 import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
 
 export struct ProjectRow { name: string, folder: string }
-export struct AppDraft { id: string, name: string, executable: string, app-id: string, arguments: string, new-console: bool, shared: bool, advanced: bool }
+export struct AppDraft { id: string, name: string, executable: string, app-id: string, arguments: string, new-console: bool, shared: bool, advanced: bool, zed: bool, folder-mode: int, editor-folder: string }
 export struct InstalledRow { name: string, executable: string, app-id: string, arguments: string, new-console: bool }
 export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool }
 export struct WindowOptionRow { id: string, title: string, executable: string, assignment: string, available: bool }
@@ -90,6 +90,7 @@ export component AppWindow inherits Window {
     callback add-app();
     callback remove-app(int);
     callback browse-app(int);
+    callback browse-editor-folder(int);
     callback browse-folder();
     callback browse-browser();
     callback search-apps();
@@ -327,10 +328,32 @@ export component AppWindow inherits Window {
                                     Button { text: app.advanced ? "Hide advanced" : "Advanced"; enabled: root.form-enabled; clicked => { app.advanced = !app.advanced; } }
                                     Button { text: "Remove"; enabled: root.form-enabled; clicked => { root.remove-app(index); } }
                                 }
-                                CheckBox { text: "Use this app across projects"; checked <=> app.shared; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                                CheckBox { text: "Use this app across projects"; checked <=> app.shared; enabled: root.form-enabled && app.folder-mode == 0; toggled => { root.dirty = true; } }
                                 if app.shared: Text { text: "Its assigned window follows the active project."; font-size: 11px; color: #65778d; wrap: word-wrap; }
                                 if app.advanced: VerticalLayout {
                                     spacing: 8px;
+                                    if app.zed: VerticalLayout {
+                                        spacing: 8px;
+                                        Text { text: "Project to open"; font-size: 13px; font-weight: 600; color: #22313d; }
+                                        ComboBox {
+                                            model: ["Open Zed normally", "Use this Jurabox project's folder", "Choose another folder"];
+                                            current-index <=> app.folder-mode;
+                                            enabled: root.form-enabled;
+                                            selected(_) => { if app.folder-mode != 0 { app.shared = false; app.new-console = false; } root.dirty = true; }
+                                        }
+                                        if app.folder-mode == 1: Text {
+                                            text: root.project-folder != "" ? root.project-folder : "Choose this Jurabox project's folder above, or choose another folder here.";
+                                            color: root.project-folder != "" ? #65778d : #99651b;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                        }
+                                        if app.folder-mode == 2: HorizontalLayout {
+                                            spacing: 8px;
+                                            Text { text: app.editor-folder != "" ? app.editor-folder : "No folder chosen"; color: #65778d; font-size: 12px; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                                            Button { text: "Choose folder…"; enabled: root.form-enabled; clicked => { root.browse-editor-folder(index); } }
+                                        }
+                                        if app.folder-mode != 0: Text { text: "Opens this folder in its own Zed window. This takes effect on the next launch."; font-size: 11px; color: #65778d; wrap: word-wrap; }
+                                    }
                                     Text { text: "App name"; font-size: 12px; color: #65778d; }
                                     LineEdit { text <=> app.name; placeholder-text: "App name"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                     if app.app-id == "": VerticalLayout {
@@ -340,10 +363,11 @@ export component AppWindow inherits Window {
                                             LineEdit { text <=> app.executable; placeholder-text: "Choose an app or shortcut"; enabled: root.form-enabled; edited => { root.dirty = true; } }
                                             Button { text: "Browse…"; enabled: root.form-enabled; clicked => { root.browse-app(index); } }
                                         }
-                                        CheckBox { text: "Open a console window (CMD / PowerShell)"; checked <=> app.new-console; enabled: root.form-enabled; toggled => { root.dirty = true; } }
+                                        CheckBox { text: "Open a console window (CMD / PowerShell)"; checked <=> app.new-console; enabled: root.form-enabled && app.folder-mode == 0; toggled => { root.dirty = true; } }
                                     }
                                     if app.app-id != "": Text { text: "Windows handles launching this installed app."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                                     LineEdit { text <=> app.arguments; placeholder-text: "Launch arguments (optional)"; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                    if app.folder-mode != 0: Text { text: "Leave launch arguments empty when a project is selected."; font-size: 11px; color: #65778d; wrap: word-wrap; }
                                     Text { text: "Arguments use Windows quoting. Use {folder} to pass the project folder."; font-size: 11px; color: #65778d; wrap: word-wrap; }
                                 }
                             }
