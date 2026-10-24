@@ -250,30 +250,146 @@ pub fn run() -> Result<()> {
         Journal::read(&path)?.unwrap().projects.is_empty(),
         "Clean exit left lost sessions"
     );
-    // A stale PID or damaged record must never cause process-name/PID adoption.
+    // Legacy/missing ownership evidence becomes a project-scoped resolution
+    // problem, while the original host journal is archived byte-for-byte.
     let mut stale = host;
-    stale.version = 1; // Legacy records have no recoverable command capability.
+    stale.version = 1;
     stale.identity.created ^= 1;
-    stale.projects.push(project);
+    let mut unknown = project;
+    unknown.id = Uuid::new_v4();
+    let unknown_id = unknown.id;
+    stale.projects.push(unknown);
     stale.save(&path)?;
     let bytes = fs::read(&path)?;
+    let mut resolver = Client::connect(&path)?;
+    let summary = resolver.request(Request::Snapshot)?.summary;
     ensure!(
-        Client::connect(&path).is_err(),
-        "Lost host was silently replaced"
+        summary
+            .recovery
+            .iter()
+            .any(|problem| problem.project == unknown_id),
+        "Legacy uncertainty was not exposed in recovery UI state"
     );
     ensure!(
-        fs::read(&path)? == bytes,
-        "Uncertain ownership record was overwritten"
+        fs::read(
+            path.with_extension("archive")
+                .join(format!("{}.json", stale.generation))
+        )? == bytes,
+        "Original ownership evidence was not preserved"
     );
+    resolver.request(Request::Recover(unknown_id, true))?;
+    ensure!(
+        resolver.request(Request::StopAndQuit)?.quit,
+        "Resolved private host did not exit"
+    );
+    drop(resolver);
     println!(
-        "PASS: leave-running, abrupt disconnect, verified host/session/output reconnection, original setup, manual-stop retention, clean exit, and lost-host refusal."
+        "PASS: leave-running, verified reconnection, original setup/output, manual stops, clean exit, and project-scoped legacy resolution without process adoption."
     );
     // Restore this fixture's desktop before the independent real-UI exercise.
     drop(fixture);
+    if std::env::var_os("JURABOX_CHECK_AUTO_STOP").is_some() {
+        inactivity(&temporary.path().join("inactivity"))?;
+    }
     crate::ui::session_check()
 }
 
-fn compose_fixture(folder: &Path) -> Result<WorkloadConfig> {
+fn inactivity(folder: &Path) -> Result<()> {
+    fs::create_dir_all(folder)?;
+    let starting = winvd::get_current_desktop().map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    let path = folder.join("projects.session-host.json");
+    let mut fixture = Fixture {
+        path: path.clone(),
+        desktop: None,
+        starting_desktop: starting,
+    };
+    let mut project = Project::from_form(
+        None,
+        &format!("Jurabox inactivity {}", Uuid::new_v4()),
+        "",
+        Some(1),
+    )?;
+    let mut service = fixture_config(
+        &folder.join("service"),
+        "inactivity",
+        WorkloadKind::CommandService,
+    )?;
+    service.stop_timeout_seconds = 5;
+    let id = service.id;
+    project.workloads.push(service);
+    let mut client = Client::connect(&path)?;
+    let opened = client.request(Request::Open(project.clone(), false))?;
+    ensure!(!opened.summary.error, "{}", opened.summary.message);
+    fixture.desktop = winvd::get_desktops().ok().and_then(|desktops| {
+        desktops
+            .into_iter()
+            .find(|desktop| desktop.get_name().ok().as_deref() == Some(&project.name))
+    });
+    wait(&mut client, |summary| {
+        summary.workloads[0].1.status == "Running"
+    })?;
+    winvd::switch_desktop(starting).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    client.request(Request::KeepRunning(project.id, true))?;
+    thread::sleep(Duration::from_millis(750));
+    let kept = client.request(Request::Snapshot)?.summary;
+    ensure!(
+        kept.sessions[0].keep_running
+            && kept.sessions[0].remaining_seconds.is_none()
+            && kept.workloads[0].1.live,
+        "Keep running did not protect the inactive session"
+    );
+    client.request(Request::KeepRunning(project.id, false))?;
+    wait(&mut client, |summary| {
+        summary.sessions[0]
+            .remaining_seconds
+            .is_some_and(|seconds| seconds > 55)
+    })?;
+    println!("Waiting for the private one-minute inactivity countdown…");
+    let deadline = Instant::now() + Duration::from_secs(75);
+    loop {
+        let response = client.request(Request::Snapshot)?;
+        ensure!(!response.summary.error, "{}", response.summary.message);
+        if response.summary.workloads[0].1.status == "Stopped" {
+            ensure!(
+                response.summary.sessions[0].automatically_stopped,
+                "Automatic stop reason was lost"
+            );
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "The inactive session did not stop through the real host timer"
+        );
+        thread::sleep(Duration::from_millis(250));
+    }
+    client.request(Request::Open(project.clone(), false))?;
+    wait(&mut client, |summary| {
+        summary.workloads[0].1.status == "Running"
+    })?;
+    client.request(Request::Service(project.id, id, Action::Stop))?;
+    winvd::switch_desktop(starting).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    client.request(Request::Open(project.clone(), false))?;
+    thread::sleep(Duration::from_millis(750));
+    ensure!(
+        client.request(Request::Snapshot)?.summary.workloads[0]
+            .1
+            .status
+            == "Stopped",
+        "Returning reopened a manually stopped service"
+    );
+    ensure!(
+        client.request(Request::StopAndQuit)?.quit,
+        "Inactivity fixture host did not quit"
+    );
+    drop(client);
+    drop(fixture);
+    println!(
+        "PASS: real host countdown, Keep running, normal auto-stop, reactivation with no live services, and manual-stop retention."
+    );
+    Ok(())
+}
+
+pub(super) fn compose_fixture(folder: &Path) -> Result<WorkloadConfig> {
     let file = folder.join("reconnect-compose.json");
     // No networks/volumes are allocated by this fixture; the image's anonymous
     // database-volume location is overridden with tmpfs, as in compose-check.
@@ -281,10 +397,11 @@ fn compose_fixture(folder: &Path) -> Result<WorkloadConfig> {
         &file,
         serde_json::to_vec(&serde_json::json!({"services":{"server":{
             "image":"postgres:16-alpine", "network_mode":"none", "tmpfs":["/var/lib/postgresql/data"],
-            "entrypoint":["/bin/sh","-c"], "command":["trap 'exit 0' TERM; echo reconnect-compose-ready; for i in $$(seq 60); do sleep 1; done"]
+            "entrypoint":["/bin/sh","-c"], "command":["trap 'exit 0' TERM; echo reconnect-compose-ready; while :; do sleep 1; done"]
         }}}))?,
     )?;
     Ok(WorkloadConfig {
+        environment: Default::default(),
         id: Uuid::new_v4(),
         name: "Reconnect Compose fixture".into(),
         kind: WorkloadKind::DockerCompose,
@@ -308,7 +425,7 @@ fn compose_fixture(folder: &Path) -> Result<WorkloadConfig> {
     })
 }
 
-fn container_id(project: &Project, id: Uuid) -> Result<String> {
+pub(super) fn container_id(project: &Project, id: Uuid) -> Result<String> {
     let config = project
         .workloads
         .iter()
@@ -337,10 +454,115 @@ fn container_id(project: &Project, id: Uuid) -> Result<String> {
     );
     let id = String::from_utf8(output.stdout)?.trim().to_owned();
     ensure!(
-        id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "Expected exactly one private diagnostic container"
+        (id.is_empty() || id.len() == 64) && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Expected at most one private diagnostic container"
     );
     Ok(id)
+}
+
+pub fn performance() -> Result<()> {
+    let temporary = tempfile::Builder::new()
+        .prefix("jurabox performance ")
+        .tempdir()?;
+    let starting = winvd::get_current_desktop().map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    let mut results = Vec::new();
+    for (label, count, mode) in [
+        ("empty", 0, "long"),
+        ("quiet", 10, "flood"),
+        ("noisy", 10, "noisy"),
+    ] {
+        let path = temporary.path().join(format!("{label}.session-host.json"));
+        let before: Vec<_> = winvd::get_desktops()
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?
+            .iter()
+            .filter_map(|desktop| desktop.get_id().ok())
+            .collect();
+        let mut fixture = Fixture {
+            path: path.clone(),
+            desktop: None,
+            starting_desktop: starting,
+        };
+        let mut project = Project::from_form(
+            None,
+            &format!("Jurabox performance {}", Uuid::new_v4()),
+            "",
+            None,
+        )?;
+        for index in 0..count {
+            project.workloads.push(fixture_config(
+                &temporary.path().join(format!("{label}-{index}")),
+                mode,
+                WorkloadKind::CommandService,
+            )?);
+        }
+        let mut client = Client::connect(&path)?;
+        let host = Journal::read(&path)?.unwrap();
+        let opening = Instant::now();
+        let response = client.request_async(Request::Open(project.clone(), false))?;
+        let acknowledged_ms = opening.elapsed().as_secs_f64() * 1000.;
+        ensure!(!response.summary.error, "{}", response.summary.message);
+        fixture.desktop = winvd::get_desktops().ok().and_then(|desktops| {
+            desktops
+                .into_iter()
+                .find(|desktop| desktop.get_id().is_ok_and(|id| !before.contains(&id)))
+        });
+        wait(&mut client, |summary| {
+            summary.workloads.len() == count
+                && summary
+                    .workloads
+                    .iter()
+                    .all(|(_, view)| view.live && !view.output.is_empty())
+        })?;
+        let mut warm = client.request_async(Request::Updates(Some(project.id), true))?;
+        warm.apply_logs(None)?;
+        let mut previous = warm.summary;
+        let baseline = crate::platform::metrics::sample(host.identity.pid)?;
+        let mut full_bytes = 0;
+        let mut delta_bytes = 0;
+        let mut latency = Vec::new();
+        for _ in 0..8 {
+            thread::sleep(Duration::from_millis(500));
+            let before = Instant::now();
+            let mut response = client.request_async(Request::Updates(Some(project.id), false))?;
+            latency.push(before.elapsed().as_secs_f64() * 1000.);
+            delta_bytes += serde_json::to_vec(&response)?.len();
+            if !response.unchanged {
+                response.apply_logs(Some(&previous))?;
+                previous = response.summary;
+            }
+            full_bytes += serde_json::to_vec(&Response {
+                summary: previous.clone(),
+                choices: None,
+                quit: false,
+                unchanged: false,
+                logs: Vec::new(),
+            })?
+            .len();
+        }
+        let ending = crate::platform::metrics::sample(host.identity.pid)?;
+        latency.sort_by(f64::total_cmp);
+        results.push(serde_json::json!({"scenario":label,"services":count,"open_ack_ms":acknowledged_ms,
+            "poll_p95_ms":latency[latency.len()-1],"delta_response_bytes":delta_bytes,"equivalent_full_snapshot_bytes":full_bytes,
+            "transport_reduction_percent":100.*(1.-delta_bytes as f64/full_bytes.max(1) as f64),
+            "host_cpu_seconds":ending.cpu_seconds-baseline.cpu_seconds,"host_final_process":ending,
+            "sample_seconds":4,"debug_build":cfg!(debug_assertions)}));
+        ensure!(
+            client.request(Request::StopAndQuit)?.quit,
+            "Benchmark workloads could not stop normally."
+        );
+        drop(client);
+        drop(fixture);
+    }
+    fs::create_dir_all("target/performance-check")?;
+    fs::write(
+        "target/performance-check/host.json",
+        serde_json::to_vec_pretty(&results)?,
+    )?;
+    println!(
+        "Host performance: {}",
+        serde_json::to_string_pretty(&results)?
+    );
+    Ok(())
 }
 
 fn wait(client: &mut Client, condition: impl Fn(&Summary) -> bool) -> Result<Summary> {
@@ -371,6 +593,11 @@ impl Drop for Fixture {
             && journal.validate_owner().is_ok()
             && let Ok(mut client) = Client::connect(&self.path)
         {
+            if let Ok(response) = client.request(Request::Snapshot) {
+                for problem in response.summary.recovery {
+                    let _ = client.request(Request::Recover(problem.project, true));
+                }
+            }
             for project in &journal.projects {
                 for workload in &project.workloads {
                     let _ = client.request(Request::Service(

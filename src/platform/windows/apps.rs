@@ -4,7 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 mod catalog;
+mod icons;
 pub use catalog::{activate, installed_apps, resolve_app};
+pub use icons::{Pixels as IconPixels, icon};
 use windows::{
     Win32::{
         Foundation::{

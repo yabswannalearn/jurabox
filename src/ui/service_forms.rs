@@ -11,6 +11,13 @@ pub(super) fn load(window: &AppWindow, project: Option<&Project>) {
         .into_iter()
         .flat_map(|project| &project.workloads)
         .map(|entry| WorkloadDraft {
+            environment: entry
+                .environment
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into(),
             id: entry.id.to_string().into(),
             name: entry.name.clone().into(),
             one_shot: entry.kind == WorkloadKind::StartupAction,
@@ -83,6 +90,7 @@ pub(super) fn read(window: &AppWindow, project: &mut Project) -> Result<()> {
                     arguments: row.stop_arguments.to_string(),
                 });
             Ok(WorkloadConfig {
+                environment: parse_environment(&row.environment)?,
                 id: Uuid::parse_str(&row.id)?,
                 name: row.name.trim().into(),
                 kind: if row.compose { WorkloadKind::DockerCompose } else if row.one_shot {
@@ -138,7 +146,24 @@ pub(super) fn refresh_runtime(window: &AppWindow, state: &State) {
             can_stop: view.can_stop,
         })
         .collect();
-    window.set_session_workloads(ModelRc::new(VecModel::from(rows)));
+    window.set_session_workloads(update_rows(window.get_session_workloads(), rows));
+}
+
+fn parse_environment(text: &str) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut values = std::collections::BTreeMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let (name, value) = line
+            .split_once('=')
+            .context("Use one NAME=value environment override per line.")?;
+        let name = name.trim();
+        anyhow::ensure!(
+            seen.insert(name.to_uppercase()),
+            "Each environment name can appear only once."
+        );
+        values.insert(name.to_owned(), value.to_owned());
+    }
+    Ok(values)
 }
 
 fn editable(window: &AppWindow) -> bool {
@@ -279,7 +304,7 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>) {
         let Some(window) = weak.upgrade() else {
             return;
         };
-        if !editable(&window) || window.get_workspace_busy() {
+        if !editable(&window) || (window.get_workspace_busy() && action.as_str() != "force") {
             return;
         }
         let Ok(id) = Uuid::parse_str(&id) else {

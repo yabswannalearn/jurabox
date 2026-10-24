@@ -21,6 +21,7 @@ pub(crate) fn fixture_config(
     fs::create_dir_all(folder)?;
     let executable = std::env::current_exe()?;
     Ok(WorkloadConfig {
+        environment: Default::default(),
         id: Uuid::new_v4(),
         name: format!("Fixture {mode}"),
         kind,
@@ -326,6 +327,80 @@ pub fn run() -> Result<()> {
             "Output retention was unbounded"
         );
         println!("PASS bounded output for large Unicode output without line breaks");
+    }
+    {
+        let server = fixture_config(
+            &root.join("auto-server"),
+            "long",
+            WorkloadKind::CommandService,
+        )?;
+        let mut action = fixture_config(
+            &root.join("auto-action"),
+            "delayed-success",
+            WorkloadKind::StartupAction,
+        )?;
+        action.dependencies.push(server.id);
+        let mut dependent = fixture_config(
+            &root.join("auto-dependent"),
+            "long",
+            WorkloadKind::CommandService,
+        )?;
+        dependent.dependencies.push(action.id);
+        let manual = fixture_config(
+            &root.join("manual-preserved"),
+            "long",
+            WorkloadKind::CommandService,
+        )?;
+        let manual_id = manual.id;
+        let mut owned = OwnedCheck::new(vec![server, action, dependent, manual])?;
+        ensure!(
+            owned.0.start_all().is_empty(),
+            "Automatic-stop fixture could not start"
+        );
+        wait("finite action is running", || {
+            owned.0.poll();
+            Ok(owned.0.entries[1].live() && owned.0.entries[3].live())
+        })?;
+        let action_pid = owned.0.entries[1].process.as_ref().unwrap().id;
+        owned.0.act(manual_id, Action::Stop)?;
+        let began = Instant::now();
+        owned.0.begin_shutdown(true, false);
+        ensure!(
+            began.elapsed() < Duration::from_millis(900),
+            "Beginning automatic shutdown blocked the host"
+        );
+        ensure!(
+            owned.0.shutting_down() && owned.0.entries[0].live() && owned.0.entries[1].live(),
+            "Automatic stop interrupted a finite action or its prerequisite"
+        );
+        owned.0.resume_automatic();
+        ensure!(
+            owned.0.shutting_down(),
+            "Returning reversed an in-progress shutdown"
+        );
+        fs::write(root.join("auto-action/allow-action"), "ready")?;
+        wait("automatic shutdown finishes", || {
+            owned.0.poll();
+            Ok(owned.0.shutdown_result().is_some())
+        })?;
+        owned.0.shutdown_result().unwrap()?;
+        owned.0.resume_automatic();
+        wait("automatic reactivation", || {
+            owned.0.poll();
+            Ok(owned.0.entries[0].live() && owned.0.entries[2].live())
+        })?;
+        ensure!(
+            !owned.0.entries[3].live() && owned.0.entries[3].status == Status::Stopped,
+            "Reactivation overrode a manual stop"
+        );
+        ensure!(
+            owned.0.entries[1].status == Status::Completed
+                && owned.0.entries[1].process.as_ref().unwrap().id == action_pid,
+            "Reactivation reran a completed startup action"
+        );
+        println!(
+            "PASS nonblocking dependency shutdown, finite-action protection, return-during-stop, automatic-only reactivation, and manual-stop retention"
+        );
     }
     ensure!(
         outside.0.live(),

@@ -18,6 +18,7 @@ mod fixture;
 mod probe;
 mod readiness_check;
 mod recovery;
+mod shutdown;
 pub(crate) use check::fixture_config;
 pub use check::run as check;
 pub use fixture::run as fixture;
@@ -81,6 +82,7 @@ struct Entry {
     stop_job: Option<Uuid>,
     recovered: bool,
     record_error: Option<String>,
+    auto_stopped: bool,
 }
 
 fn active(process: &Option<ManagedProcess>) -> bool {
@@ -406,15 +408,22 @@ impl Entry {
             bail!("{}", self.detail);
         }
         let launch = if let Some(claim) = self.job {
+            let environment = environment(&self.config.environment);
             ManagedProcess::start_recorded(
                 &self.config.start.executable,
                 &arguments,
                 &self.folder,
                 claim,
                 &self.record.as_ref().unwrap().claim_path(claim),
+                Some(&environment),
             )
         } else {
-            ManagedProcess::start(&self.config.start.executable, &arguments, &self.folder)
+            ManagedProcess::start_environment(
+                &self.config.start.executable,
+                &arguments,
+                &self.folder,
+                Some(&environment(&self.config.environment)),
+            )
         };
         match launch {
             Ok(process) => {
@@ -496,9 +505,15 @@ impl Entry {
                 &self.folder,
                 claim,
                 &self.record.as_ref().unwrap().claim_path(claim),
+                Some(&environment(&self.config.environment)),
             )
         } else {
-            ManagedProcess::start(&executable, &arguments, &self.folder)
+            ManagedProcess::start_environment(
+                &executable,
+                &arguments,
+                &self.folder,
+                Some(&environment(&self.config.environment)),
+            )
         };
         match launch {
             Ok(process) => {
@@ -597,7 +612,7 @@ impl Entry {
             },
             output: if self.recovered {
                 format!(
-                    "[Command output is unavailable for this recovered instance. A new Start after it stops will capture output again.]\n{output}"
+                    "[Live output capture is unavailable for this recovered instance. Any last saved output is shown below. Start after it stops to capture output again.]\n{output}"
                 )
             } else {
                 output
@@ -630,6 +645,32 @@ impl Entry {
 #[derive(Default)]
 pub struct Services {
     entries: Vec<Entry>,
+    shutdown: Option<shutdown::Shutdown>,
+}
+
+/// Windows environment names are case insensitive. Preserve inherited entries,
+/// apply this session's overrides, and emit a sorted Unicode environment block.
+pub(super) fn environment(overrides: &std::collections::BTreeMap<String, String>) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut values = std::collections::BTreeMap::new();
+    for (key, value) in std::env::vars_os() {
+        values.insert(key.to_string_lossy().to_uppercase(), (key, value));
+    }
+    for (key, value) in overrides {
+        values.insert(key.to_uppercase(), (key.into(), value.into()));
+    }
+    let mut block = Vec::new();
+    for (_, (key, value)) in values {
+        block.extend(key.encode_wide());
+        block.push(61);
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    if block.len() == 1 {
+        block.push(0);
+    }
+    block
 }
 
 impl Services {
@@ -668,10 +709,14 @@ impl Services {
                     stop_job: None,
                     recovered: false,
                     record_error: None,
+                    auto_stopped: false,
                 })
             })
             .collect::<Result<_>>()?;
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            shutdown: None,
+        })
     }
 
     pub fn start_all(&mut self) -> Vec<String> {
@@ -711,7 +756,8 @@ impl Services {
         self.entries.iter().any(Entry::live)
     }
     pub fn activity(&self) -> bool {
-        self.live()
+        self.shutdown.is_some()
+            || self.live()
             || self.entries.iter().any(|entry| {
                 !entry.capture_drained
                     || entry
@@ -726,6 +772,7 @@ impl Services {
                             | Status::Checking
                             | Status::NotReady
                             | Status::StopFailed
+                            | Status::Stopping
                     )
             })
     }
@@ -734,6 +781,7 @@ impl Services {
             entry.poll();
         }
         self.schedule();
+        self.advance_shutdown();
     }
 
     pub fn resume_monitoring(&self) {
@@ -762,6 +810,7 @@ impl Services {
             .iter()
             .position(|entry| entry.config.id == id)
             .context("This workload is not in the open session. Relaunch the saved setup first.")?;
+        self.entries[index].auto_stopped = false;
         if matches!(action, Action::Start) {
             let message = self.entries[index].queue_start();
             self.schedule();

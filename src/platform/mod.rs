@@ -7,7 +7,7 @@ pub use windows::{
     workspace_check,
 };
 #[cfg(windows)]
-pub use windows::{apps, managed_process, workspace};
+pub use windows::{apps, managed_process, metrics, preferences, workspace};
 
 #[cfg(not(windows))]
 pub fn status() -> anyhow::Result<()> {

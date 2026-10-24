@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(windows)]
 mod command_keeper;
 mod platform;
@@ -28,6 +30,7 @@ enum Command {
     ComposeCheck,
     SessionCheck,
     RecoveryCheck,
+    PerformanceCheck,
     Keeper,
     SessionHost {
         journal: std::path::PathBuf,
@@ -58,6 +61,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         ["compose-check", "--exercise"] => Ok(Command::ComposeCheck),
         ["session-check", "--exercise"] => Ok(Command::SessionCheck),
         ["recovery-check", "--exercise"] => Ok(Command::RecoveryCheck),
+        ["performance-check", "--exercise"] => Ok(Command::PerformanceCheck),
         ["_command-keeper"] => Ok(Command::Keeper),
         ["_session-host", journal] => Ok(Command::SessionHost {
             journal: (*journal).into(),
@@ -76,7 +80,8 @@ fn parse_command(args: &[String]) -> Result<Command> {
         | ["service-ui-check"]
         | ["compose-check"]
         | ["session-check"]
-        | ["recovery-check"] => bail!(
+        | ["recovery-check"]
+        | ["performance-check"] => bail!(
             "This check requires --exercise: it temporarily switches desktops and opens test windows"
         ),
         _ => bail!("unknown command; run jurabox --help for usage"),
@@ -166,6 +171,17 @@ fn run() -> Result<()> {
             }
         }
         Command::ProbeWindow => platform::probe_window(),
+        Command::PerformanceCheck => {
+            #[cfg(windows)]
+            {
+                ui::performance_check()?;
+                session_host::performance_check()
+            }
+            #[cfg(not(windows))]
+            {
+                bail!("Performance exercises require Windows 11.")
+            }
+        }
         Command::Help => {
             println!(
                 "Jurabox\n\n\
@@ -181,6 +197,7 @@ fn run() -> Result<()> {
                  jurabox compose-check --exercise   Verify private Docker Compose containers\n\n\
                  jurabox session-check --exercise   Verify background sessions and reconnection\n\n\
                  jurabox recovery-check --exercise  Verify recovery after a private host crash\n\n\
+                 jurabox performance-check --exercise Measure UI, host CPU/memory and IPC traffic\n\n\
                  The exercise briefly switches desktops, restores the starting desktop,\n\
                  closes its test window, and removes only its temporary desktop."
             );

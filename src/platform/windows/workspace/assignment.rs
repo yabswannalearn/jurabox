@@ -8,6 +8,8 @@ pub struct SessionApp {
     pub title: Option<String>,
     pub executable: Option<String>,
     pub shared: bool,
+    #[serde(default)]
+    pub app_id: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

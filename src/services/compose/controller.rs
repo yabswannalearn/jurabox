@@ -30,22 +30,23 @@ pub(super) fn namespace(project: Uuid, workload: Uuid) -> String {
 }
 
 pub(super) struct Controller {
-    cli: Cli,
-    config: WorkloadConfig,
-    project: String,
+    pub(super) cli: Cli,
+    pub(super) config: WorkloadConfig,
+    pub(super) project: String,
     namespace: String,
-    owner: String,
-    engine: Option<String>,
-    snapshot: Option<tempfile::TempDir>,
-    plan: Option<Plan>,
-    containers: BTreeMap<String, Container>,
-    logs: BTreeMap<String, ManagedProcess>,
+    pub(super) owner: String,
+    pub(super) engine: Option<String>,
+    pub(super) snapshot: Option<tempfile::TempDir>,
+    pub(super) plan: Option<Plan>,
+    pub(super) containers: BTreeMap<String, Container>,
+    pub(super) logs: BTreeMap<String, ManagedProcess>,
     uncertain: bool,
-    attempted: bool,
-    started: bool,
+    pub(super) attempted: bool,
+    pub(super) started: bool,
     started_at: Option<Instant>,
     stopping: Option<Instant>,
     note: String,
+    pub(super) record: Option<crate::recovery::Record>,
 }
 
 impl Controller {
@@ -55,8 +56,10 @@ impl Controller {
         folder: &Path,
         cancel: Arc<AtomicBool>,
     ) -> Self {
+        let mut cli = Cli::new(&config.start.executable, folder, cancel);
+        cli.environment = config.environment.clone();
         Self {
-            cli: Cli::new(&config.start.executable, folder, cancel),
+            cli,
             namespace: namespace(project, config.id),
             config,
             project: project.to_string(),
@@ -72,6 +75,7 @@ impl Controller {
             started_at: None,
             stopping: None,
             note: String::new(),
+            record: None,
         }
     }
     fn engine(&mut self) -> Result<()> {
@@ -170,7 +174,7 @@ impl Controller {
         );
         Ok(values)
     }
-    fn verify(&self, container: &Container) -> Result<()> {
+    pub(super) fn verify(&self, container: &Container) -> Result<()> {
         let labels = &container.labels;
         ensure!(
             labels.get(model::OWNER) == Some(&self.owner)
@@ -223,6 +227,7 @@ impl Controller {
             !missing,
             "An owned container was removed outside Jurabox. Relaunch to rebuild the session."
         );
+        self.persist()?;
         Ok(())
     }
     pub fn start(&mut self) -> Result<()> {
@@ -241,14 +246,7 @@ impl Controller {
                 "Compose file does not exist: {}",
                 compose_file.display()
             );
-            let runtime_directory = crate::projects::ProjectStore::default_path()?
-                .parent()
-                .context("No Jurabox data folder")?
-                .join("runtime");
-            fs::create_dir_all(&runtime_directory)?;
-            let directory = tempfile::Builder::new()
-                .prefix("compose-")
-                .tempdir_in(runtime_directory)?;
+            let directory = crate::session_host::snapshot_directory()?;
             let file = directory.path().join("compose.json");
             let mut command = self.compose_args(&compose_file);
             command.extend(args(&["config", "--format", "json", "--output"]));
@@ -285,6 +283,7 @@ impl Controller {
             );
             self.attempted = true;
             self.uncertain = true;
+            self.persist()?;
             let file = self.snapshot.as_ref().unwrap().path().join("compose.json");
             let mut command = self.compose_args(&file);
             command.extend(args(&[
@@ -391,6 +390,7 @@ impl Controller {
             }
         }
         self.started = failures.is_empty();
+        self.persist()?;
         ensure!(failures.is_empty(), "{}", failures.join("\n"));
         Ok(())
     }
@@ -503,6 +503,22 @@ impl Controller {
         self.close_log_clients();
         self.attempted = false;
         self.started = false;
+        self.persist()?;
+        Ok(())
+    }
+    pub(super) fn follow_logs(&mut self) -> Result<()> {
+        for item in self.containers.values().cloned().collect::<Vec<_>>() {
+            self.verify(&item)?;
+            let process = self.cli.spawn(&args(&[
+                "container",
+                "logs",
+                "--follow",
+                "--tail",
+                "200",
+                &item.id,
+            ]))?;
+            self.logs.insert(item.id, process);
+        }
         Ok(())
     }
     pub fn close_log_clients(&mut self) {
@@ -538,7 +554,7 @@ impl Controller {
         }) {
             Duration::from_millis(250)
         } else {
-            Duration::from_secs(2)
+            Duration::from_secs(if self.available() { 10 } else { 2 })
         }
     }
     pub fn snapshot(&self, error: Option<String>) -> Snapshot {

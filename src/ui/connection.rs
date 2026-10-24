@@ -19,9 +19,15 @@ pub(super) fn start(
                 None
             }
         };
+        let mut last_summary = None;
         if let Some(client) = &mut client {
-            match client.request(HostRequest::Snapshot) {
+            match client.request_async(HostRequest::Updates(state.lock().unwrap().selected, true)) {
                 Ok(mut response) => {
+                    if response.apply_logs(None).is_err() {
+                        failed(&weak, "Could not read the initial session output.".into());
+                        return;
+                    }
+                    last_summary = Some(response.summary.clone());
                     if !response.summary.open.is_empty() && response.summary.message.is_empty() {
                         response.summary.message =
                             "Reconnected to running sessions. No apps were restarted.".into();
@@ -31,7 +37,7 @@ pub(super) fn start(
                 Err(error) => failed(&weak, format!("{error:#}")),
             }
         }
-        let mut last_summary = None;
+        let mut force_refresh = false;
         loop {
             let request = match receiver.recv_timeout(Duration::from_millis(500)) {
                 Ok(request) => request,
@@ -44,6 +50,10 @@ pub(super) fn start(
             let request = match request {
                 launch::Request::Open(project, relaunch) => HostRequest::Open(project, relaunch),
                 launch::Request::Close(project) => HostRequest::Close(project),
+                launch::Request::Recover(project, leave) => HostRequest::Recover(project, leave),
+                launch::Request::KeepRunning(project, keep) => {
+                    HostRequest::KeepRunning(project, keep)
+                }
                 launch::Request::Service(project, service, action) => {
                     HostRequest::Service(project, service, action)
                 }
@@ -58,7 +68,9 @@ pub(super) fn start(
                 launch::Request::Unassign(project, app) => HostRequest::Unassign(project, app),
                 launch::Request::StopAndQuit => HostRequest::StopAndQuit,
                 launch::Request::LeaveAndQuit => HostRequest::LeaveAndQuit,
-                launch::Request::Poll => HostRequest::Snapshot,
+                launch::Request::Poll => {
+                    HostRequest::Updates(state.lock().unwrap().selected, force_refresh)
+                }
                 launch::Request::Desktop(_) => continue,
             };
             // After connection loss, an explicit user action can reconnect. We
@@ -72,10 +84,18 @@ pub(super) fn start(
                     }
                 }
             }
-            match client.as_mut().unwrap().request(request) {
-                Ok(response) => {
+            match client.as_mut().unwrap().request_async(request) {
+                Ok(mut response) => {
+                    if response.unchanged {
+                        continue;
+                    }
+                    if poll && response.apply_logs(last_summary.as_ref()).is_err() {
+                        force_refresh = true;
+                        continue;
+                    }
+                    force_refresh = false;
                     let quit = response.quit;
-                    if !poll || last_summary.as_ref() != Some(&response.summary) {
+                    if response.quit || !poll || last_summary.as_ref() != Some(&response.summary) {
                         last_summary = Some(response.summary.clone());
                         publish(&weak, &state, response, ticket, !poll);
                     }
@@ -127,6 +147,7 @@ fn publish(
                 window_picker::loaded(&window, &mut state, ticket, choices);
             }
         }
+        super::preferences::notify_changes(&window, &state.workspace, &response.summary);
         state.workspace = response.summary;
         launch::refresh_status(&window, &state);
         if !state.workspace.message.is_empty() {

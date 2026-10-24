@@ -11,6 +11,7 @@ pub(super) fn browser_label(window: &AppWindow) {
             .unwrap_or("Custom browser")
     };
     window.set_browser_name(name.into());
+    window.set_browser_icon(super::icons::get(&super::icons::key(&value, "")));
 }
 
 fn add(window: &AppWindow, app: apps::InstalledApp) {
@@ -105,6 +106,15 @@ pub(super) fn setup(window: &AppWindow) {
                 name.to_lowercase().contains(&query).then_some((app, name))
             })
             .map(|(app, name)| InstalledRow {
+                icon_key: super::icons::key(
+                    &app.executable.to_string_lossy(),
+                    app.app_id.as_deref().unwrap_or_default(),
+                )
+                .into(),
+                icon: super::icons::cached(&super::icons::key(
+                    &app.executable.to_string_lossy(),
+                    app.app_id.as_deref().unwrap_or_default(),
+                )),
                 name: name.into(),
                 executable: app.executable.to_string_lossy().into_owned().into(),
                 app_id: app.app_id.clone().unwrap_or_default().into(),

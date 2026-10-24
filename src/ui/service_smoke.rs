@@ -72,6 +72,7 @@ pub(super) fn run() -> Result<()> {
                     action.name = "Prepare project".into();
                     action.executable = std::env::current_exe()?.to_string_lossy().into_owned().into();
                     action.arguments = "_service-fixture delayed-success \"{folder}\"".into();
+                    action.environment = "JURABOX_UI_TEST=value=with=equals".into();
                     let action_id = action.id.clone();
                     drafts.set_row_data(2, action);
                     window.invoke_toggle_dependency(0, action_id.clone(), true);
@@ -85,7 +86,8 @@ pub(super) fn run() -> Result<()> {
                 }
                 1 => {
                     let data = ProjectStore::new(path.clone()).load()?;
-                    ensure!(data.version == 5 && data.projects[0].workloads.len() == 3 && data.projects[0].workloads[2].kind == WorkloadKind::StartupAction, "Typed workload form did not persist");
+                    ensure!(data.version == 8 && data.projects[0].workloads.len() == 3 && data.projects[0].workloads[2].kind == WorkloadKind::StartupAction, "Typed workload form did not persist");
+                    ensure!(data.projects[0].workloads[2].environment.get("JURABOX_UI_TEST").map(String::as_str) == Some("value=with=equals"), "Environment override did not persist");
                     ensure!(matches!(data.projects[0].workloads[0].readiness, Readiness::Http { .. }) && data.projects[0].workloads[0].readiness_timeout_seconds == 1 && data.projects[0].workloads[0].dependencies == vec![data.projects[0].workloads[2].id], "Readiness or stable prerequisite selection did not persist");
                     // Scroll to inspect the saved command editor before launch.
                     window.window().dispatch_event_with_result(slint::platform::WindowEvent::PointerScrolled { position: slint::LogicalPosition::new(600., 350.), delta_x: 0., delta_y: -720. })?;
@@ -117,6 +119,7 @@ pub(super) fn run() -> Result<()> {
                     window.invoke_service_action(first_id.clone().into(), "stop".into());
                 }
                 4 => {
+                    if first_row().is_some_and(|row| row.status == "Stopping") { return Ok(()); }
                     ensure!(first_row().is_some_and(|row| row.status == "Stopped") && second_row().is_some_and(|row| row.live), "Manual stop affected another service");
                     window.invoke_open_project();
                 }
@@ -153,6 +156,7 @@ pub(super) fn run() -> Result<()> {
                     window.invoke_service_action(second_id.clone().into(), "force".into());
                 }
                 11 => {
+                    if second_row().is_some_and(|row| row.status == "Stopping") { return Ok(()); }
                     ensure!(!window.get_managed_live(), "Explicit Force stop did not finish");
                     window.invoke_relaunch_project();
                 }

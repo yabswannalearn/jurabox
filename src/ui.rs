@@ -4,8 +4,13 @@ mod app_picker;
 mod assignment_smoke;
 #[cfg(windows)]
 mod connection;
+mod icons;
 #[cfg(windows)]
 mod launch;
+#[cfg(windows)]
+mod performance;
+#[cfg(windows)]
+mod preferences;
 #[cfg(windows)]
 mod service_forms;
 #[cfg(windows)]
@@ -27,6 +32,20 @@ use uuid::Uuid;
 
 slint::include_modules!();
 
+/// Preserve repeated UI items and focus when only a few rows change.
+fn update_rows<T: Clone + PartialEq + 'static>(model: ModelRc<T>, rows: Vec<T>) -> ModelRc<T> {
+    use slint::Model;
+    if model.row_count() != rows.len() {
+        return ModelRc::new(VecModel::from(rows));
+    }
+    for (index, row) in rows.into_iter().enumerate() {
+        if model.row_data(index).as_ref() != Some(&row) {
+            model.set_row_data(index, row);
+        }
+    }
+    model
+}
+
 struct State {
     data: ProjectFile,
     selected: Option<Uuid>,
@@ -45,11 +64,15 @@ fn notice(window: &AppWindow, message: &str, error: bool) {
 }
 
 fn refresh(window: &AppWindow, state: &State) {
+    window.set_start_with_windows(state.data.preferences.start_with_windows);
+    window.set_mute_failures(state.data.preferences.mute_failures);
+    window.set_resolve_confirmed(false);
     let rows: Vec<_> = state
         .data
         .projects
         .iter()
         .map(|project| ProjectRow {
+            status: "".into(),
             name: project.name.clone().into(),
             folder: project
                 .folder
@@ -84,6 +107,15 @@ fn refresh(window: &AppWindow, state: &State) {
             .apps
             .iter()
             .map(|app| AppDraft {
+                icon_key: icons::key(
+                    &app.executable.to_string_lossy(),
+                    app.app_id.as_deref().unwrap_or_default(),
+                )
+                .into(),
+                icon: icons::get(&icons::key(
+                    &app.executable.to_string_lossy(),
+                    app.app_id.as_deref().unwrap_or_default(),
+                )),
                 id: app.id.to_string().into(),
                 name: app.name.clone().into(),
                 executable: app.executable.to_string_lossy().into_owned().into(),
@@ -252,6 +284,10 @@ fn create_with_host(store: ProjectStore, persistent: bool) -> Result<(AppWindow,
     }));
     let window = AppWindow::new().context("Cannot create the Jurabox window.")?;
     let tray = AppTray::new().context("Cannot create the Jurabox tray icon.")?;
+    #[cfg(windows)]
+    icons::setup(&window);
+    #[cfg(windows)]
+    preferences::setup(&window, state.clone());
     window.set_session_host_enabled(persistent);
     refresh(&window, &state.lock().unwrap());
     #[cfg(windows)]
@@ -465,6 +501,11 @@ pub fn run(start_hidden: bool) -> Result<()> {
 
 pub fn check() -> Result<()> {
     smoke::run()
+}
+
+#[cfg(windows)]
+pub fn performance_check() -> Result<()> {
+    performance::run()
 }
 
 pub fn service_check() -> Result<()> {

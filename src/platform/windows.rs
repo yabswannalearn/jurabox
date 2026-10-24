@@ -45,6 +45,8 @@ pub fn activate_management_window(window: &slint::Window) -> anyhow::Result<()> 
 
 use anyhow::{Context, Result, bail, ensure};
 use probe_window::ProbeWindow;
+pub mod metrics;
+pub mod preferences;
 use std::{
     sync::mpsc::{self, Receiver},
     thread,

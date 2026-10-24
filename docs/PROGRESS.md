@@ -360,3 +360,61 @@ Inspection of the installed Windows `Zed.exe --help` and `bin/Zed.exe --help` es
 The live `ui-check` passed Zed detection, unchanged default behavior, the Advanced-only form, both folder choices/save/reload, missing-project-folder validation, discard restoration, and normal-launch opt-out. Inspected screenshots at 1040×740 and 820×650 show the selected folder and native picker button. The existing app/browser/project/tray/save-error checks also passed. `workspace-check --exercise` passed existing launch/assignment/sharing/relaunch semantics and restored the original desktops. Formatting and Clippy with warnings denied passed; the Windows executable was built locally.
 
 The packaged Windows GUI-subsystem executable passed the full UI check and the multiprocess session/UI check. One earlier packaged UI run could not register its Windows tray icon; the complete repeat passed. No application code changed between those two runs.
+
+
+## 2026-10-24: Roadmap implementation
+
+The user authorized the entire improvement roadmap, including auto-stop/recovery and authentic app logos. This pass adds:
+
+- Windows Shell icons for desktop and packaged apps in the virtualized app chooser, saved app/browser cards and workspace list. A background worker caches native images. White-only packaged marks receive a neutral backdrop on the light surface. Native bitmap/DC resources are released.
+- Bounded asynchronous app/recovery workers, project-scoped busy state, incremental dependency shutdown and visible operation state. Manual stop failures retain workloads; independent branches continue. Automatic shutdown protects unfinished finite actions and their prerequisites, and returning waits for shutdown before reactivating only auto-stopped services.
+- Workspace inactivity countdowns, Keep running, lock/unknown-session/sleep-gap resets, fresh countdowns after reconnection, preserved manual stops and Changes pending.
+- Project-scoped recovery controls with retry and explicit leave-unmanaged resolution. Compose records preserve local engine identity, ownership capability, exact container/creation evidence and frozen resolved setup. Verified new-logon evidence leaves old user-session commands stopped. Recovery never launches replacements.
+- Incremental status/log IPC with unchanged replies, selected-project output patches, bounded payloads and Unicode-safe tail rotation; stable UI models; ten-second stable Compose reconciliation with fast shutdown polling.
+- Bounded saved command-output tails, conservative retired-generation/snapshot retention, archived prior journals, build/protocol checks and a portable updater that refuses running installations.
+- Settings schema 8, per-service environment overrides (including original stop commands), preferences for sign-in tray startup and muted failures, and configuration-only import/export with independent IDs, dependency/path remapping and omitted free-form values by default.
+- Windows CI, a portable release package/checksum script, GUI-subsystem release builds, and machine-readable release performance exercises.
+
+### Validation on this host
+
+Windows 11 Home Single Language, build 26200, x64 MSVC. The current app catalog contained 325 entries, including 61 Windows application IDs. Tests use private project files, journals, jobs, windows and Docker scopes.
+
+| Check | Result |
+| --- | --- |
+| Formatting, Clippy with warnings denied, unit tests | Passed; 45 unit tests |
+| Native desktop and assignment exercises | Passed; original desktops restored |
+| Workspace exercise with installed Edge and a real CMD/terminal host | Passed; owned browser/console windows cleaned up |
+| Service exercise | Passed, including nonblocking auto-stop, finite-action protection, return-during-stop and manual-stop retention |
+| UI exercise in the release GUI executable | Passed; real desktop/ChatGPT icons, compact/normal preferences, portable import copies and recovery-control layout |
+| Service UI exercise in the release GUI executable | Passed; environment values with embedded equals signs, asynchronous stop/Force completion, original setup and failed/successful relaunch |
+| Full Compose exercise | Passed; identity checks, same-container reuse, source snapshots, dependency conditions, non-escalating stop and explicit Force stop |
+| Warm command/Compose reconnection and production manager UI | Passed; original container/setup/output and manual-stop state retained |
+| Cold command-only and mixed command/Compose recovery | Passed; original container/logs/frozen setup, stopped-container recovery and explicit cleanup |
+| Live one-minute inactivity exercise through the production host | Passed; Keep running, normal auto-stop, reactivation from all-stopped state and manual-stop retention |
+| Portable updater | Passed with a private installation; refuses a running executable and preserves unrelated files |
+| Release measurements and final package | Passed; optimized GUI executable, portable ZIP contents and saved SHA-256 verified |
+
+The first crash exercise under a full compiler load produced a conservatively blocked project; its private evidence was archived and its abandoned fixture host closed. A first six-second Compose stop also timed out under that load. Repeated command recovery, mixed recovery and the full Compose exercise passed after limiting compiler concurrency. The recovery fixture now allows 45 seconds for Docker-backed startup and prints per-service timeout details. Production stop deadlines remain user-configured and never authorize automatic force escalation. Tests were also updated to wait for asynchronous completion rather than assuming an acknowledgement means the service has already stopped.
+
+Screenshots are in `target/ui-check/`; release UI logs are in `target/pilot-release-final/`. The architecture graph in `graphify-out/` is the source-review baseline before this implementation, not a refreshed map of the new modules.
+
+### Remaining interactive pilot gates
+
+Actual Windows logoff/reboot, physical lock/sleep transitions, Explorer restart, screen readers, multiple monitors/display scales, elevation boundaries and broader Windows/app compatibility have not been certified by these fixtures. Actual interactive Zed/ChatGPT launch/reuse still needs its installed-app pilot; extracting their icons and testing chooser selection does not establish window compatibility. This local validation pass did not execute Windows CI remotely; remote results are tracked on the pull request. The portable package is unsigned. Recovered command output shows its last bounded saved tail; the original live stdout pipe cannot reconnect.
+
+
+### Release measurements and package
+
+Measured after compiler/check processes had exited. These are short samples from this development host, not a cross-machine guarantee. Each host scenario used eight polls over approximately four seconds. Transport reductions compare the actual delta replies with equivalent full-snapshot replies containing the same sampled output; they are not an overall application speedup.
+
+| Scenario | Delta / equivalent full-snapshot bytes | Reduction | Poll p95 | Host private memory | Host CPU seconds / 4 seconds |
+| --- | --- | --- | --- | --- | --- |
+| Empty | 1,376 / 4,200 | 67.24% | 7.67 ms | 2.83 MiB | 0.0000 |
+| Ten quiet services with retained output | 1,376 / 5,274,512 | 99.97% | 1.81 ms | 6.91 MiB | 0.0156 |
+| Ten noisy services | 360,077 / 4,878,444 | 92.62% | 7.94 ms | 7.06 MiB | 0.1094 |
+
+UI initialization took 151.3 ms, excluding the first rendered frame. The initial visible two-second sample consumed 0.9219 CPU seconds and includes rendering/catalog startup; it is not a steady-state idle result. The following hidden three-second sample consumed 0.0156 CPU seconds. Final UI private memory was about 101 MiB (working set about 111 MiB).
+
+Open acknowledgement took 182 ms for an empty project, 2.09 seconds for ten quiet services, and 2.90 seconds for ten noisy services. Native command creation and ownership-record initialization still happen during the initial host Open operation; moving or budgeting that initial work is the next measured responsiveness opportunity. These cold-open measurements must not be presented as achieving the provisional 100 ms warm-feedback target. The management UI itself stays responsive while its IPC worker waits.
+
+Raw results: `target/performance-check/ui.json`, `host.json` and `target/pilot-release-final/performance.log`. The final optimized executable is a Windows GUI-subsystem binary (22,454,272 bytes). The portable ZIP is `target/release-artifacts/Jurabox-windows-x64.zip` (9,516,564 bytes); its SHA-256 is saved alongside as `.zip.sha256`. Packaging contains only the executable, pilot README and updater. No runtime records or settings are packaged.

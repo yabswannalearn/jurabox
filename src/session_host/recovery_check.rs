@@ -71,6 +71,14 @@ pub fn run() -> Result<()> {
         unready.clone(),
         interrupted_stop.clone(),
     ];
+    let compose = if std::env::var_os("JURABOX_CHECK_DOCKER").is_some() {
+        let config = super::check::compose_fixture(folder.path())?;
+        let id = config.id;
+        project.workloads.push(config);
+        Some(id)
+    } else {
+        None
+    };
     let response = client.request(Request::Open(project.clone(), false))?;
     fixture.desktop = winvd::get_desktops().ok().and_then(|desktops| {
         desktops
@@ -82,7 +90,28 @@ pub fn run() -> Result<()> {
         summary.workloads[2].1.status == "Completed"
             && child_folder.join("child-pid").is_file()
             && summary.workloads[6].1.live
+            && compose.is_none_or(|id| {
+                summary.workloads.iter().any(|(_, view)| {
+                    view.id == id
+                        && view.status == "Running"
+                        && view.output.contains("reconnect-compose-ready")
+                })
+            })
     })?;
+    let container = compose
+        .map(|id| super::check::container_id(&project, id))
+        .transpose()?;
+    if let Some(id) = compose {
+        let config = project
+            .workloads
+            .iter()
+            .find(|config| config.id == id)
+            .unwrap();
+        fs::write(
+            &config.compose.as_ref().unwrap().file,
+            "invalid source after launch",
+        )?;
+    }
     let response = client.request(Request::Service(project.id, stopped.id, Action::Stop))?;
     ensure!(!response.summary.error, "{}", response.summary.message);
     let response = client.request(Request::Service(
@@ -106,6 +135,19 @@ pub fn run() -> Result<()> {
     let mut client = Client::connect(&path)?;
     let recovered = client.request(Request::Snapshot)?;
     ensure!(!recovered.summary.error, "{}", recovered.summary.message);
+    if let Some(id) = compose {
+        wait(&mut client, |summary| {
+            summary.workloads.iter().any(|(_, view)| {
+                view.id == id
+                    && view.status == "Running"
+                    && view.output.contains("reconnect-compose-ready")
+            })
+        })?;
+        ensure!(
+            Some(super::check::container_id(&project, id)?) == container,
+            "Cold recovery replaced the original Compose container"
+        );
+    }
     ensure!(
         Journal::read(&path)?.unwrap().generation != old_host.generation,
         "Host was not replaced"
@@ -230,7 +272,14 @@ pub fn run() -> Result<()> {
     future["version"] = 999.into();
     fs::write(&manifest, serde_json::to_vec(&future)?)?;
     let refused = Workspaces::recover(root.clone(), std::slice::from_ref(&project));
-    ensure!(refused.is_err(), "Future recovery record was accepted");
+    ensure!(
+        refused?
+            .summary()
+            .recovery
+            .iter()
+            .any(|problem| problem.project == project.id),
+        "Future recovery record was not blocked at project scope"
+    );
     ensure!(
         serde_json::from_slice::<serde_json::Value>(&fs::read(&manifest)?)?["version"] == 999,
         "Future record was overwritten"
@@ -246,10 +295,32 @@ pub fn run() -> Result<()> {
     fixture.spawn()?;
     let mut client = Client::connect(&path)?;
     let empty = client.request(Request::Snapshot)?;
-    ensure!(
-        empty.summary.open.is_empty() && empty.summary.workloads.is_empty(),
-        "Ended sessions were relaunched after resource loss"
-    );
+    if let Some(id) = compose {
+        ensure!(
+            empty.summary.open == vec![project.id]
+                && empty
+                    .summary
+                    .workloads
+                    .iter()
+                    .any(|(_, view)| { view.id == id && !view.live && view.status == "Stopped" })
+                && Some(super::check::container_id(&project, id)?) == container,
+            "Recovery did not preserve the stopped owned Compose container"
+        );
+        let response = client.request(Request::Close(project.id))?;
+        ensure!(!response.summary.error, "{}", response.summary.message);
+        ensure!(
+            super::check::container_id(&project, id)?.is_empty(),
+            "Close did not release the private Compose fixture"
+        );
+        println!(
+            "PASS: mixed command/Compose cold recovery, original container/logs/frozen plan, stopped-container recovery and explicit release."
+        );
+    } else {
+        ensure!(
+            empty.summary.open.is_empty() && empty.summary.workloads.is_empty(),
+            "Ended sessions were relaunched after resource loss"
+        );
+    }
     ensure!(
         client.request(Request::StopAndQuit)?.quit,
         "Empty recovered host did not quit"
@@ -275,14 +346,24 @@ fn started(folder: &Path) -> Result<usize> {
 }
 
 fn wait(client: &mut Client, condition: impl Fn(&Summary) -> bool) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(45);
     loop {
         let response = client.request(Request::Snapshot)?;
         ensure!(!response.summary.error, "{}", response.summary.message);
         if condition(&response.summary) {
             return Ok(());
         }
-        ensure!(Instant::now() < deadline, "Recovery fixture timed out");
+        ensure!(
+            Instant::now() < deadline,
+            "Recovery fixture timed out: {}",
+            response
+                .summary
+                .workloads
+                .iter()
+                .map(|(_, view)| format!("{}: {} ({})", view.name, view.status, view.detail))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
         thread::sleep(Duration::from_millis(25));
     }
 }

@@ -1,5 +1,18 @@
 use super::*;
 
+pub(crate) fn compose_control_variable(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    name.starts_with("COMPOSE_")
+        || matches!(
+            name.as_str(),
+            "DOCKER_HOST"
+                | "DOCKER_CONTEXT"
+                | "DOCKER_TLS_VERIFY"
+                | "DOCKER_CERT_PATH"
+                | "DOCKER_API_VERSION"
+        )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkloadKind {
@@ -80,6 +93,8 @@ pub struct WorkloadConfig {
     pub dependencies: Vec<Uuid>,
     #[serde(default)]
     pub compose: Option<ComposeConfig>,
+    #[serde(default)]
+    pub environment: std::collections::BTreeMap<String, String>,
 }
 
 fn stop_timeout() -> u32 {
@@ -140,6 +155,21 @@ impl WorkloadConfig {
     }
 
     pub fn validate(&self, project_folder: Option<&Path>) -> Result<()> {
+        let mut environment_names = std::collections::HashSet::new();
+        for (key, value) in &self.environment {
+            ensure!(
+                environment_names.insert(key.to_uppercase()),
+                "Environment names must be unique ignoring case."
+            );
+            ensure!(
+                self.kind != WorkloadKind::DockerCompose || !compose_control_variable(key),
+                "Use the Docker context and Compose fields instead of overriding {key}."
+            );
+            ensure!(
+                !key.is_empty() && !key.contains(['=', '\0', '\r', '\n']) && !value.contains('\0'),
+                "Environment overrides need a name and a value without null characters."
+            );
+        }
         ensure!(
             !self.name.trim().is_empty(),
             "Give each service or startup action a name."
@@ -246,13 +276,14 @@ mod tests {
         let original = serde_json::to_string(&old).unwrap();
         fs::write(&path, &original).unwrap();
         let migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 7);
+        assert_eq!(migrated.version, 8);
         assert!(migrated.projects[0].workloads[0].compose.is_none());
         assert_eq!(fs::read_to_string(path).unwrap(), original);
     }
 
     fn config() -> WorkloadConfig {
         WorkloadConfig {
+            environment: Default::default(),
             id: Uuid::new_v4(),
             name: "Development server".into(),
             kind: WorkloadKind::CommandService,
@@ -351,7 +382,7 @@ mod tests {
         fs::write(&path, &original).unwrap();
         let store = ProjectStore::new(path.clone());
         let mut migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 7);
+        assert_eq!(migrated.version, 8);
         assert_eq!(
             migrated.projects[0].workloads[0].readiness,
             Readiness::ProcessRunning
@@ -393,7 +424,7 @@ mod tests {
         );
         fs::write(&path, &old).unwrap();
         let migrated = store.load().unwrap();
-        assert_eq!(migrated.version, 7);
+        assert_eq!(migrated.version, 8);
         assert!(migrated.projects[0].workloads.is_empty());
         assert_eq!(fs::read_to_string(path).unwrap(), old);
     }

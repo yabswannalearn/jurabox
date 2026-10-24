@@ -19,9 +19,9 @@ use windows::{
     core::{HSTRING, Interface, PWSTR},
 };
 
-struct Apartment(bool);
+pub(super) struct Apartment(bool);
 impl Apartment {
-    fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         // Desktop integration may already have entered the MTA. Keep that
         // apartment; only balance COM initializations owned by this guard.
         let result = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };

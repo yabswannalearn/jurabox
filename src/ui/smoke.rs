@@ -81,6 +81,7 @@ pub fn run() -> Result<()> {
     let mut step = 0;
     let mut original_id = None;
     let mut selected_windows_app = None;
+    let mut expected_imported_count = 0;
     let started = Instant::now();
     let timeout = Duration::from_secs(60);
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
@@ -257,6 +258,7 @@ pub fn run() -> Result<()> {
                     ensure!(window.get_installed_apps().row_count() > 0 && window.get_installed_apps().iter().all(|row| row.name.to_lowercase().contains("command prompt")), "app search did not filter by friendly name ignoring case");
                 }
                 18 => {
+                    if window.get_installed_apps().iter().any(|row| row.name == "Command Prompt" && row.icon.size().width == 0) { return Ok(false); }
                     snapshot(&window, &artifacts.join("app-search.png"))?;
                     let index = window.get_installed_apps().iter().position(|row| row.name == "Command Prompt").context("Command Prompt disappeared from search")?;
                     window.invoke_choose_app(index as i32);
@@ -296,6 +298,7 @@ pub fn run() -> Result<()> {
                     }
                 }
                 23 => {
+                    if selected_windows_app.as_ref().is_some_and(|id| window.get_installed_apps().iter().any(|row| row.app_id == id.as_str() && row.icon.size().width == 0)) { return Ok(false); }
                     snapshot(&window, &artifacts.join("windows-app-search.png"))?;
                     if let Some(id) = &selected_windows_app {
                         let index = window.get_installed_apps().iter().position(|row| row.app_id == id.as_str()).context("Windows app choice disappeared")?;
@@ -373,6 +376,32 @@ pub fn run() -> Result<()> {
                 32 => {
                     ensure!(read()?.projects.last().unwrap().apps[0].open_folder.is_none(), "Open Zed normally did not clear folder launch selection");
                     println!("PASS Zed detection, Advanced-only project selection, default unchanged, project/custom folder save/reload, missing-folder validation, discard and normal-launch opt-out");
+                    window.set_settings_visible(true); window.set_mute_failures(true); window.invoke_save_preferences();
+                }
+                33 => {
+                    if window.get_busy() { return Ok(false); }
+                    ensure!(read()?.preferences.mute_failures && !read()?.preferences.start_with_windows, "preferences did not save independently");
+                    snapshot(&window, &artifacts.join("preferences-compact.png"))?;
+                    window.window().set_size(slint::LogicalSize::new(1040., 740.));
+                }
+                34 => {
+                    snapshot(&window, &artifacts.join("preferences.png"))?;
+                    let data = read()?; expected_imported_count = data.projects.len() * 2;
+                    let portable = artifacts.join("private-export.json"); ProjectStore::new(portable.clone()).save(&data.portable(false))?;
+                    window.set_import_path(portable.to_string_lossy().into_owned().into()); window.invoke_import_projects();
+                }
+                35 => {
+                    if window.get_busy() { return Ok(false); }
+                    ensure!(read()?.projects.len() == expected_imported_count, "import did not add independent project copies");
+                    ensure!(read()?.preferences.mute_failures, "import replaced local preferences");
+                    window.set_settings_visible(false);
+                    window.set_recovery_message("The original workload could not be verified. Its ownership record is preserved.".into());
+                    window.set_resolve_confirmed(false);
+                }
+                36 => {
+                    snapshot(&window, &artifacts.join("recovery-controls.png"))?;
+                    window.set_recovery_message("".into());
+                    println!("PASS genuine app icons, preferences, portable import copies, and recovery-control layout");
                     window.invoke_quit(); return Ok(true);
                 }
                 _ => bail!("unexpected UI check step"),

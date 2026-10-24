@@ -1,11 +1,13 @@
-import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
+import { AboutSlint, Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, SpinBox, TextEdit } from "std-widgets.slint";
 
-export struct ProjectRow { name: string, folder: string }
-export struct AppDraft { id: string, name: string, executable: string, app-id: string, arguments: string, new-console: bool, shared: bool, advanced: bool, zed: bool, folder-mode: int, editor-folder: string }
-export struct InstalledRow { name: string, executable: string, app-id: string, arguments: string, new-console: bool }
-export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool }
+import { PreferencesDialog } from "preferences.slint";
+
+export struct ProjectRow { name: string, folder: string, status: string }
+export struct AppDraft { id: string, name: string, executable: string, app-id: string, arguments: string, new-console: bool, shared: bool, advanced: bool, zed: bool, folder-mode: int, editor-folder: string, icon: image, icon-key: string }
+export struct InstalledRow { name: string, executable: string, app-id: string, arguments: string, new-console: bool, icon: image, icon-key: string }
+export struct SessionAppRow { id: string, name: string, title: string, executable: string, assigned: bool, shared: bool, icon: image, icon-key: string }
 export struct WindowOptionRow { id: string, title: string, executable: string, assignment: string, available: bool }
-export struct WorkloadDraft { id: string, name: string, one-shot: bool, compose: bool, compose-file: string, docker-context: string, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int, readiness: int, readiness-endpoint: string, readiness-timeout: int, dependencies: string }
+export struct WorkloadDraft { id: string, name: string, one-shot: bool, compose: bool, compose-file: string, docker-context: string, executable: string, arguments: string, folder: string, stop-executable: string, stop-arguments: string, stop-timeout: int, readiness: int, readiness-endpoint: string, readiness-timeout: int, dependencies: string, environment: string }
 export struct WorkloadRow { id: string, name: string, kind: string, status: string, detail: string, output: string, error: bool, live: bool, can-start: bool, can-stop: bool }
 
 export component AppTray inherits SystemTrayIcon {
@@ -47,6 +49,15 @@ export component AppWindow inherits Window {
     in property <bool> workspace-busy;
     in property <bool> session-open;
     in property <bool> managed-live;
+    in-out property <bool> keep-running;
+    in property <bool> changes-pending;
+    in property <string> countdown;
+    callback toggle-keep-running(bool);
+    in property <string> recovery-message;
+    in property <bool> recovery-busy;
+    in-out property <bool> resolve-confirmed;
+    callback recovery-action(bool);
+    callback archive-session-record();
     in-out property <[WorkloadDraft]> workloads;
     in property <[WorkloadRow]> session-workloads;
     in property <[SessionAppRow]> session-apps;
@@ -68,6 +79,7 @@ export component AppWindow inherits Window {
     in-out property <bool> browser-enabled;
     in-out property <string> browser-executable;
     in property <string> browser-name: "Choose a browser";
+    in property <image> browser-icon;
     in-out property <bool> browser-advanced;
     in-out property <string> browser-urls;
     in-out property <string> project-name;
@@ -77,6 +89,14 @@ export component AppWindow inherits Window {
     in-out property <bool> dirty;
     in-out property <bool> delete-pending;
     in-out property <bool> about-visible;
+    in-out property <bool> settings-visible;
+    in-out property <bool> start-with-windows;
+    in-out property <bool> mute-failures;
+    in-out property <bool> export-values;
+    in-out property <string> import-path;
+    in-out property <string> remap-from;
+    in-out property <string> remap-to;
+    callback save-preferences(); callback browse-import(); callback import-projects(); callback export-projects();
     in property <string> notice;
     in property <bool> notice-error;
     callback select-project(int);
@@ -94,6 +114,7 @@ export component AppWindow inherits Window {
     callback browse-folder();
     callback browse-browser();
     callback search-apps();
+    pure callback resolve-app-icon(string) -> image;
     callback choose-app(int);
     callback open-app-picker(bool);
     callback browse-new-app();
@@ -126,6 +147,7 @@ export component AppWindow inherits Window {
             title: "File";
             MenuItem { title: "New project"; shortcut: @keys(Control + N); enabled: root.form-enabled; activated => { root.new-project(); } }
             MenuItem { title: "Save project"; shortcut: @keys(Control + S); enabled: root.form-enabled && !root.window-picker-visible; activated => { root.save-project(); } }
+            MenuItem { title: "Preferences & portability…"; enabled: root.form-enabled; activated => { root.settings-visible = true; } }
             MenuSeparator {}
             MenuItem { title: "Hide to tray"; activated => { root.hide-window(); } }
             MenuItem { title: "Quit and leave services running"; activated => { root.quit(); } }
@@ -177,7 +199,7 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 Text {
-                                    text: project.folder;
+                                    text: project.status != "" ? project.status + " · " + project.folder : project.folder;
                                     color: #65778d;
                                     font-size: 11px;
                                     overflow: elide;
@@ -199,6 +221,9 @@ export component AppWindow inherits Window {
                     Button { text: root.workspace-busy ? "Working…" : (root.session-open ? "Switch to project" : "Open project"); primary: true; enabled: root.editing-existing && root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.open-project(); } }
                     if root.session-open: Button { text: "Relaunch saved setup"; enabled: root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.relaunch-project(); } }
                     if root.session-open: Button { text: "Close session"; enabled: root.form-enabled && !root.workspace-busy && !root.dirty; clicked => { root.close-project(); } }
+                    if root.session-open: CheckBox { text: "Keep running"; checked <=> root.keep-running; toggled => { root.toggle-keep-running(self.checked); } }
+                    if root.changes-pending: Text { text: "Changes pending · relaunch to apply"; color: #99651b; font-size: 12px; wrap: word-wrap; }
+                    if root.countdown != "": Text { text: root.countdown; color: #087f8c; font-size: 12px; }
                 }
                 Text { text: "\{root.projects.length} saved on this PC"; font-size: 12px; color: #65778d; }
                 Button { text: "Hide to tray"; enabled: root.form-enabled; clicked => { root.hide-window(); } }
@@ -249,7 +274,7 @@ export component AppWindow inherits Window {
                                         spacing: 8px;
                                         Button { text: service.status == "Completed" ? "Run again" : (service.error ? "Retry" : "Start"); enabled: service.can-start && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "start"); } }
                                         Button { text: "Stop"; enabled: service.can-stop && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "stop"); } }
-                                        Button { text: "Force stop"; enabled: service.live && root.form-enabled && !root.workspace-busy; clicked => { root.service-action(service.id, "force"); } }
+                                        Button { text: "Force stop"; enabled: service.live && root.form-enabled; clicked => { root.service-action(service.id, "force"); } }
                                     }
                                     if service.output != "": Rectangle {
                                         height: 140px;
@@ -274,7 +299,11 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     padding: 12px;
                                     spacing: 8px;
-                                    Text { text: app.name + (app.shared ? " · Shared" : ""); color: #22313d; font-weight: 600; overflow: elide; }
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Image { source: app.icon.width > 0 ? app.icon : @image-url("assets/app-fallback.svg"); width: 24px; height: 24px; image-fit: contain; }
+                                        Text { text: app.name + (app.shared ? " · Shared" : ""); color: #22313d; font-weight: 600; overflow: elide; }
+                                    }
                                     Text { text: app.assigned ? app.title : "No assigned window. Check whether the app is open, then assign its window."; color: app.assigned ? #087f8c : #65778d; font-size: 12px; wrap: word-wrap; }
                                     if app.assigned: Text { text: app.executable; font-size: 11px; color: #65778d; overflow: elide; }
                                     HorizontalLayout {
@@ -287,6 +316,28 @@ export component AppWindow inherits Window {
                             }
                             if root.session-apps.length == 0: Text { text: "This session has no configured apps. Add apps below, save, and relaunch to include them."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                             Rectangle { height: 12px; background: transparent; }
+                        }
+                        if root.session-host-enabled && !root.session-connected && root.notice-error: Rectangle {
+                            background: #fff4df; border-radius: 6px;
+                            VerticalLayout {
+                                padding: 14px; spacing: 10px;
+                                Text { text: "Cannot reconnect to the previous session host"; color: #805515; font-weight: 600; wrap: word-wrap; }
+                                Text { text: "You can archive an unreadable or disconnected runtime record. This leaves any old work unmanaged and preserves its evidence. A live host prevents this action. Inspect existing processes and containers before opening replacement sessions."; color: #805515; font-size: 12px; wrap: word-wrap; }
+                                CheckBox { text: "I will manage the existing work myself"; checked <=> root.resolve-confirmed; }
+                                Button { text: "Archive disconnected runtime record"; enabled: root.resolve-confirmed && !root.workspace-busy; clicked => { root.archive-session-record(); } }
+                            }
+                        }
+                        if root.recovery-message != "": Rectangle {
+                            background: #fff4df; border-radius: 6px;
+                            VerticalLayout {
+                                padding: 14px; spacing: 10px;
+                                Text { text: "This session needs recovery"; color: #805515; font-weight: 600; }
+                                Text { text: root.recovery-message; color: #805515; font-size: 12px; wrap: word-wrap; }
+                                Button { text: root.recovery-busy ? "Verifying..." : "Retry recovery"; enabled: !root.workspace-busy && !root.recovery-busy; clicked => { root.recovery-action(false); } }
+                                Text { text: "If ownership cannot be verified, you can leave the original work unmanaged. Jurabox will preserve its records and leave its processes and containers alone. Inspect existing work before opening a replacement session."; color: #805515; font-size: 12px; wrap: word-wrap; }
+                                CheckBox { text: "I will manage the existing work myself"; checked <=> root.resolve-confirmed; }
+                                Button { text: "Leave work unmanaged"; enabled: root.resolve-confirmed && !root.workspace-busy && !root.recovery-busy; clicked => { root.recovery-action(true); } }
+                            }
                         }
                         Text { text: "Project details"; font-size: 17px; font-weight: 600; color: #22313d; }
                         Text { text: "Project name"; color: #22313d; }
@@ -324,6 +375,7 @@ export component AppWindow inherits Window {
                                 spacing: 8px;
                                 HorizontalLayout {
                                     spacing: 8px;
+                                    Image { source: app.icon.width > 0 ? app.icon : @image-url("assets/app-fallback.svg"); width: 28px; height: 28px; image-fit: contain; }
                                     Text { text: app.name != "" ? app.name : "Custom app"; color: #22313d; font-weight: 600; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
                                     Button { text: app.advanced ? "Hide advanced" : "Advanced"; enabled: root.form-enabled; clicked => { app.advanced = !app.advanced; } }
                                     Button { text: "Remove"; enabled: root.form-enabled; clicked => { root.remove-app(index); } }
@@ -379,7 +431,7 @@ export component AppWindow inherits Window {
                             spacing: 8px;
                             HorizontalLayout {
                                 spacing: 8px;
-                                Text { text: root.browser-name; color: #22313d; font-weight: 600; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                            Image { source: root.browser-icon.width > 0 ? root.browser-icon : @image-url("assets/app-fallback.svg"); width: 28px; height: 28px; image-fit: contain; }                            Text { text: root.browser-name; color: #22313d; font-weight: 600; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
                                 Button { text: "Choose browser"; enabled: root.form-enabled; clicked => { root.open-app-picker(true); } }
                                 Button { text: root.browser-advanced ? "Hide advanced" : "Advanced"; enabled: root.form-enabled; clicked => { root.browser-advanced = !root.browser-advanced; } }
                             }
@@ -471,6 +523,9 @@ export component AppWindow inherits Window {
                                     Text { text: "seconds for normal shutdown"; color: #22313d; font-size: 12px; }
                                 }
                                 Text { text: service.compose ? "Stop sends the configured container signal. A timeout leaves containers running. Force stop is always explicit." : "Stop leaves the workload running if the command is missing, fails, or times out. Force stop is always explicit."; color: #65778d; font-size: 11px; wrap: word-wrap; }
+                                Text { text: "Environment overrides"; color: #22313d; font-size: 12px; }
+                                TextEdit { text <=> service.environment; preferred-height: 72px; enabled: root.form-enabled; edited => { root.dirty = true; } }
+                                Text { text: "One NAME=value per line. Values stay local and are omitted from exports."; color: #65778d; font-size: 11px; wrap: word-wrap; }
                             }
                         }
                         Text { text: "Readiness is checked during startup. A timeout leaves the workload running; Retry checks it again. Configure scripts through an explicit shell."; color: #65778d; font-size: 12px; wrap: word-wrap; }
@@ -496,7 +551,7 @@ export component AppWindow inherits Window {
                             }
                             Text { text: "minutes away from this project"; color: #22313d; }
                         }
-                        Text { text: "Inactivity auto-stop is not active yet. GUI apps stay open. Saved changes apply on the next launch."; font-size: 12px; color: #65778d; wrap: word-wrap; }
+                        Text { text: "Stops this project's managed services after you switch away. GUI apps stay open. Keep running pauses auto-stop for the current session. Saved changes apply on the next launch."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                         if root.delete-pending: Rectangle {
                             background: #fff1ef;
                             border-radius: 6px;
@@ -557,23 +612,33 @@ export component AppWindow inherits Window {
                 Text { text: root.picking-browser ? "Choose a browser" : "Add an app"; font-family: "Bahnschrift"; font-size: 26px; color: #22313d; }
                 Text { text: root.picking-browser ? "Choose Chrome or Edge for your project links." : "Select an app installed on this PC. Jurabox handles the setup."; font-size: 12px; color: #65778d; wrap: word-wrap; }
                 app-search-edit := LineEdit { text <=> root.app-search; placeholder-text: root.picking-browser ? "Search browsers" : "Search apps, e.g. Zed or ChatGPT"; edited => { root.search-apps(); } accepted => { if root.installed-apps.length == 1 { root.choose-app(0); } } }
-                ScrollView {
+                ListView {
                     min-height: 100px;
                     vertical-stretch: 1;
-                    VerticalLayout {
-                        alignment: start;
-                        spacing: 6px;
-                        for app[index] in root.installed-apps: Button {
-                            text: app.name;
-                            min-height: 38px;
+                    for app[index] in root.installed-apps: Rectangle {
+                        height: 48px;
+                        Button {
+                            width: parent.width; height: parent.height;
+                            text: ""; accessible-label: app.name;
                             clicked => { root.choose-app(index); }
                         }
-                        if root.installed-apps.length == 0: Text {
-                            text: root.apps-loading ? "Finding installed apps…" : "No apps found. Try another name or browse for the app.";
-                            color: #65778d;
-                            wrap: word-wrap;
+                        HorizontalLayout {
+                            x: 12px; y: 6px; width: parent.width - 24px; height: 36px; spacing: 12px;
+                            Image {
+                                source: {
+                                    let resolved = app.icon.width > 0 ? app.icon : root.resolve-app-icon(app.icon-key);
+                                    resolved.width > 0 ? resolved : @image-url("assets/app-fallback.svg")
+                                }
+                                width: 28px; height: 28px; image-fit: contain;
+                                accessible-role: none;
+                            }
+                            Text { text: app.name; color: #22313d; font-size: 14px; horizontal-stretch: 1; min-width: 0px; overflow: elide; accessible-role: none; }
                         }
                     }
+                }
+                if root.installed-apps.length == 0: Text {
+                    text: root.apps-loading ? "Finding installed apps…" : "No apps found. Try another name or browse for the app.";
+                    color: #65778d; wrap: word-wrap;
                 }
                 if root.picker-error != "": Text { text: root.picker-error; font-size: 12px; color: #922d25; wrap: word-wrap; }
                 HorizontalLayout {
@@ -636,6 +701,22 @@ export component AppWindow inherits Window {
                 Button { text: root.window-picker-assigning ? "Assigning…" : "Cancel"; enabled: !root.window-picker-assigning; clicked => { root.cancel-window-picker(); } }
             }
         }
+    }
+    if root.settings-visible: PreferencesDialog {
+        width: parent.width; height: parent.height;
+        start-with-windows <=> root.start-with-windows;
+        mute-failures <=> root.mute-failures;
+        export-values <=> root.export-values;
+        import-path <=> root.import-path;
+        remap-from <=> root.remap-from;
+        remap-to <=> root.remap-to;
+        busy: root.busy;
+        notice: root.notice; notice-error: root.notice-error;
+        save => { root.save-preferences(); }
+        close => { root.settings-visible = false; }
+        browse-import => { root.browse-import(); }
+        import-projects => { root.import-projects(); }
+        export-projects => { root.export-projects(); }
     }
     if root.about-visible: Rectangle {
         background: #22313d80;

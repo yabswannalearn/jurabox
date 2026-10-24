@@ -42,7 +42,7 @@ use windows::{
 
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Output {
     bytes: VecDeque<u8>,
     dropped: u64,
@@ -51,14 +51,49 @@ struct Output {
 
 impl Output {
     fn push(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            if self.bytes.len() == OUTPUT_LIMIT {
-                self.bytes.pop_front();
-                self.dropped = self.dropped.saturating_add(1);
-            }
-            self.bytes.push_back(*byte);
+        let discard = (self.bytes.len() + bytes.len()).saturating_sub(OUTPUT_LIMIT);
+        self.dropped = self.dropped.saturating_add(discard as u64);
+        if bytes.len() >= OUTPUT_LIMIT {
+            self.bytes.clear();
+            self.bytes.extend(&bytes[bytes.len() - OUTPUT_LIMIT..]);
+        } else {
+            self.bytes.drain(..discard);
+            self.bytes.extend(bytes);
         }
     }
+}
+
+fn persist_output(path: &Path, output: &Output) -> Result<()> {
+    use std::io::Write;
+    let mut file =
+        tempfile::NamedTempFile::new_in(path.parent().context("Missing output folder")?)?;
+    file.write_all(&output.dropped.to_le_bytes())?;
+    for bytes in [output.bytes.as_slices().0, output.bytes.as_slices().1] {
+        file.write_all(bytes)?;
+    }
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn restored_output(path: &Path) -> Output {
+    let mut output = Output {
+        finished: true,
+        ..Default::default()
+    };
+    if let Ok(file) = File::open(path) {
+        let mut bytes = Vec::new();
+        if file
+            .take(OUTPUT_LIMIT as u64 + 9)
+            .read_to_end(&mut bytes)
+            .is_ok()
+            && (8..=OUTPUT_LIMIT + 8).contains(&bytes.len())
+        {
+            output.dropped = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+            output.bytes.extend(&bytes[8..]);
+        }
+    }
+    output
 }
 
 fn handle(value: &OwnedHandle) -> HANDLE {
@@ -131,10 +166,6 @@ pub struct ManagedProcess {
 }
 
 impl ManagedProcess {
-    pub fn start(executable: &Path, arguments: &str, folder: &Path) -> Result<Self> {
-        Self::start_environment(executable, arguments, folder, None)
-    }
-
     pub fn start_environment(
         executable: &Path,
         arguments: &str,
@@ -151,12 +182,13 @@ impl ManagedProcess {
         folder: &Path,
         claim: uuid::Uuid,
         completion: &Path,
+        environment: Option<&[u16]>,
     ) -> Result<Self> {
         Self::launch(
             executable,
             arguments,
             folder,
-            None,
+            environment,
             Some((claim, completion)),
         )
     }
@@ -196,18 +228,36 @@ impl ManagedProcess {
         }
         let output = Arc::new(Mutex::new(Output::default()));
         let reader_output = output.clone();
+        let durable_output = claim.map(|(_, path)| path.with_extension("output"));
         let mut reader = File::from(read);
         std::thread::Builder::new()
             .name("service-output".into())
             .spawn(move || {
                 let mut buffer = [0u8; 4096];
+                let mut flushed = std::time::Instant::now() - std::time::Duration::from_secs(1);
                 loop {
                     match reader.read(&mut buffer) {
                         Ok(0) => break,
-                        Ok(count) => reader_output.lock().unwrap().push(&buffer[..count]),
+                        Ok(count) => {
+                            let snapshot = {
+                                let mut output = reader_output.lock().unwrap();
+                                output.push(&buffer[..count]);
+                                (durable_output.is_some()
+                                    && flushed.elapsed() >= std::time::Duration::from_secs(1))
+                                .then(|| output.clone())
+                            };
+                            if let (Some(path), Some(snapshot)) = (&durable_output, snapshot) {
+                                let _ = persist_output(path, &snapshot);
+                                flushed = std::time::Instant::now();
+                            }
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
                     }
+                }
+                if let Some(path) = &durable_output {
+                    let snapshot = reader_output.lock().unwrap().clone();
+                    let _ = persist_output(path, &snapshot);
                 }
                 reader_output.lock().unwrap().finished = true;
             })
@@ -315,10 +365,9 @@ impl ManagedProcess {
             job,
             process: None,
             id: 0,
-            output: Arc::new(Mutex::new(Output {
-                finished: true,
-                ..Default::default()
-            })),
+            output: Arc::new(Mutex::new(restored_output(
+                &completion.with_extension("output"),
+            ))),
         };
         let active = process.active()?;
         ensure!(
@@ -338,11 +387,20 @@ impl ManagedProcess {
     pub fn output(&self) -> String {
         let output = self.output.lock().unwrap();
         let bytes: Vec<_> = output.bytes.iter().copied().collect();
-        let text = String::from_utf8_lossy(&bytes);
+        let mut first = 0;
+        if output.dropped > 0 {
+            while first < bytes.len().min(3) && bytes[first] & 0xc0 == 0x80 {
+                first += 1;
+            }
+        }
+        let text = String::from_utf8_lossy(&bytes[first..]);
         if output.dropped == 0 {
             text.into_owned()
         } else {
-            format!("[Earlier output omitted: {} bytes]\n{text}", output.dropped)
+            format!(
+                "[Earlier output omitted: {} bytes]\n{text}",
+                output.dropped + first as u64
+            )
         }
     }
 
@@ -421,6 +479,22 @@ fn create_recorded_job(claim: uuid::Uuid) -> Result<OwnedHandle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_tail_round_trips_with_a_fixed_size_and_preserves_damage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("output");
+        let mut output = Output::default();
+        output.push(&"测试-tail-".repeat(12000).into_bytes());
+        persist_output(&path, &output).unwrap();
+        let restored = restored_output(&path);
+        assert_eq!(restored.bytes, output.bytes);
+        assert_eq!(restored.dropped, output.dropped);
+        assert!(std::fs::metadata(&path).unwrap().len() <= OUTPUT_LIMIT as u64 + 8);
+        std::fs::write(&path, "damaged").unwrap();
+        assert!(restored_output(&path).bytes.is_empty());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "damaged");
+    }
 
     #[test]
     fn existing_recorded_job_cannot_be_adopted_by_a_new_launch() {
