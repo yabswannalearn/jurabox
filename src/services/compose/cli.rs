@@ -17,6 +17,7 @@ pub(super) struct Cli {
     pub host: String,
     pub cancel: Arc<AtomicBool>,
     pub pending: Option<ManagedProcess>,
+    pub environment: std::collections::BTreeMap<String, String>,
 }
 
 // CommandLineToArgvW/MS CRT quoting, with no shell involved.
@@ -49,6 +50,7 @@ impl Cli {
             host: String::new(),
             cancel,
             pending: None,
+            environment: Default::default(),
         }
     }
     pub fn spawn(&self, args: &[String]) -> Result<ManagedProcess> {
@@ -63,18 +65,15 @@ impl Cli {
             .collect::<Vec<_>>()
             .join(" ");
         let mut environment = Vec::new();
+        let mut variables = std::collections::BTreeMap::new();
         for (key, value) in std::env::vars_os() {
-            let upper = key.to_string_lossy().to_ascii_uppercase();
-            if upper.starts_with("COMPOSE_")
-                || [
-                    "DOCKER_HOST",
-                    "DOCKER_CONTEXT",
-                    "DOCKER_TLS_VERIFY",
-                    "DOCKER_CERT_PATH",
-                    "DOCKER_API_VERSION",
-                ]
-                .contains(&upper.as_str())
-            {
+            variables.insert(key.to_string_lossy().to_uppercase(), (key, value));
+        }
+        for (key, value) in &self.environment {
+            variables.insert(key.to_uppercase(), (key.into(), value.into()));
+        }
+        for (_, (key, value)) in variables {
+            if crate::projects::compose_control_variable(&key.to_string_lossy()) {
                 continue;
             }
             environment.extend(key.encode_wide());

@@ -18,8 +18,13 @@ use winvd::Desktop;
 
 mod assignment;
 mod check;
+mod cleanup;
+mod inactivity;
+mod launches;
+mod lifecycle;
 mod recovery;
 pub use assignment::{SessionApp, WindowChoices, WindowOption};
+pub use lifecycle::{SessionState, interactive_session, setup_revision};
 pub fn check() -> Result<()> {
     check::run()
 }
@@ -32,6 +37,18 @@ pub struct Summary {
     pub error: bool,
     pub apps: Vec<SessionApp>,
     pub workloads: Vec<(Uuid, services::View)>,
+    #[serde(default)]
+    pub sessions: Vec<SessionState>,
+    #[serde(default)]
+    pub recovery: Vec<RecoveryView>,
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecoveryView {
+    pub busy: bool,
+    pub project: Uuid,
+    pub name: String,
+    pub message: String,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -47,6 +64,8 @@ struct Session {
     desktop: Option<GUID>,
     entries: Vec<Entry>,
     services: Services,
+    policy: inactivity::Policy,
+    automatic: bool,
 }
 
 #[derive(Default)]
@@ -54,6 +73,12 @@ pub struct Workspaces {
     sessions: HashMap<Uuid, Session>,
     manager_process: Option<u32>,
     recovery_root: Option<std::path::PathBuf>,
+    operations: HashMap<Uuid, lifecycle::Operation>,
+    lifecycle_notice: Option<(String, bool)>,
+    blocked: HashMap<Uuid, (Project, String)>,
+    launches: launches::Launches,
+    asynchronous_launch: bool,
+    recoveries: recovery::Pending,
 }
 
 impl Workspaces {
@@ -69,6 +94,7 @@ impl Workspaces {
     pub fn pause_monitoring(&mut self) {
         for session in self.sessions.values_mut() {
             session.services.pause_monitoring();
+            session.policy.reset();
         }
     }
 
@@ -76,38 +102,68 @@ impl Workspaces {
         self.sessions
             .values()
             .map(|session| session.setup.clone())
+            .chain(self.blocked.values().map(|(project, _)| project.clone()))
             .collect()
     }
 
     pub fn summary(&self) -> Summary {
         let current = current_id().ok();
         Summary {
-            open: self.sessions.keys().copied().collect(),
+            open: self
+                .sessions
+                .keys()
+                .chain(self.blocked.keys())
+                .copied()
+                .collect(),
             active: current.and_then(|current| {
                 self.sessions
                     .iter()
                     .find_map(|(id, session)| (session.desktop == Some(current)).then_some(*id))
             }),
-            apps: self
-                .sessions
+            apps: self.app_views(),
+            workloads: self.service_views(),
+            sessions: self.session_states(),
+            recovery: self
+                .blocked
                 .iter()
-                .flat_map(|(project, session)| {
-                    session.entries.iter().map(|entry| {
-                        let window = entry.window.as_ref().filter(|window| window.is_alive());
-                        SessionApp {
-                            project: *project,
-                            app: entry.config.id,
-                            name: entry.config.name.clone(),
-                            title: window.map(AppWindow::title),
-                            executable: window.map(|window| window.executable.clone()),
-                            shared: entry.config.shared,
-                        }
-                    })
+                .map(|(id, (project, message))| RecoveryView {
+                    project: *id,
+                    name: project.name.clone(),
+                    message: message.clone(),
+                    busy: self.recoveries.busy(*id),
                 })
                 .collect(),
-            workloads: self.service_views(),
             ..Default::default()
         }
+    }
+
+    pub fn active_id(&self) -> Option<Uuid> {
+        let current = current_id().ok()?;
+        self.sessions
+            .iter()
+            .find_map(|(id, session)| (session.desktop == Some(current)).then_some(*id))
+    }
+    pub fn app_views(&self) -> Vec<SessionApp> {
+        self.sessions
+            .iter()
+            .flat_map(|(project, session)| {
+                session.entries.iter().map(|entry| {
+                    let window = entry.window.as_ref().filter(|window| window.is_alive());
+                    SessionApp {
+                        project: *project,
+                        app: entry.config.id,
+                        name: entry.config.name.clone(),
+                        title: window.map(AppWindow::title),
+                        executable: window.map(|window| window.executable.clone()).or_else(|| {
+                            (!entry.config.executable.as_os_str().is_empty())
+                                .then(|| entry.config.executable.to_string_lossy().into_owned())
+                        }),
+                        app_id: entry.config.app_id.clone(),
+                        shared: entry.config.shared,
+                    }
+                })
+            })
+            .collect()
     }
 
     pub fn close(&mut self, id: Uuid) -> Result<String> {
@@ -117,20 +173,26 @@ impl Workspaces {
                 .finish()
                 .context("Session remains open because managed workloads have not stopped.")?;
         }
+        self.retire(id)?;
         self.sessions.remove(&id);
         Ok("Session closed. Managed workloads stopped; app windows and desktop stay open.".into())
     }
 
     pub fn service_activity(&self) -> bool {
-        self.sessions
-            .values()
-            .any(|session| session.services.activity())
+        self.recoveries.active()
+            || self.launches.active()
+            || !self.operations.is_empty()
+            || self
+                .sessions
+                .values()
+                .any(|session| session.automatic || session.services.activity())
     }
 
     pub fn poll_services(&mut self) -> Vec<(Uuid, services::View)> {
         for session in self.sessions.values_mut() {
             session.services.poll();
         }
+        self.poll_lifecycle();
         self.service_views()
     }
 
@@ -150,11 +212,14 @@ impl Workspaces {
         service: Uuid,
         action: services::Action,
     ) -> Result<String> {
-        self.sessions
+        let session = self
+            .sessions
             .get_mut(&project)
-            .context("Open the project before controlling a service.")?
-            .services
-            .act(service, action)
+            .context("Open the project before controlling a service.")?;
+        if matches!(action, services::Action::Start) {
+            session.policy.reset();
+        }
+        session.services.request_action(service, action)
     }
 
     pub fn stop_for_exit(&mut self) -> Result<()> {
@@ -178,6 +243,10 @@ impl Workspaces {
     }
 
     pub fn open(&mut self, project: Project, relaunch: bool) -> Result<String> {
+        ensure!(
+            !self.blocked.contains_key(&project.id),
+            "Resolve this project's uncertain session before opening a replacement."
+        );
         project.validate()?;
         let existing = self.sessions.contains_key(&project.id);
         let mut session = self
@@ -189,6 +258,8 @@ impl Workspaces {
                 desktop: None,
                 entries: Vec::new(),
                 services: Services::default(),
+                policy: Default::default(),
+                automatic: false,
             });
         // Always retain the session, including partial launches and integration failures.
         let result = (|| {
@@ -217,7 +288,7 @@ impl Workspaces {
                     Services::recorded(project, &root.join(generation.to_string()), false)?;
                 // Commit the complete original setup and initialized service records
                 // before startup scheduling can create even the first command.
-                recovery::save(root, project, generation, session.desktop, &[])?;
+                recovery::save(root, project, generation, session.desktop, &[], false)?;
                 services
             } else {
                 Services::new(project)?
@@ -254,6 +325,9 @@ impl Workspaces {
                 });
                 let mut window = if let Some(previous) = previous {
                     previous.window.clone()
+                } else if self.asynchronous_launch {
+                    self.launches.queue(project, session.generation, &config);
+                    None
                 } else {
                     match launch_app(&config, project) {
                         Ok(window) => {
@@ -284,6 +358,8 @@ impl Workspaces {
             }
             session.entries = next;
             session.setup = project.clone();
+            session.policy = Default::default();
+            session.automatic = false;
         }
         if let Some(desktop) = desktop {
             for entry in &session.entries {

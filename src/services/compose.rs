@@ -16,6 +16,7 @@ pub(crate) mod check;
 mod cli;
 mod controller;
 mod model;
+mod recovery;
 
 #[derive(Clone, Default)]
 struct Snapshot {
@@ -28,7 +29,7 @@ struct Snapshot {
     error: Option<String>,
     output: String,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Request {
     Start,
     Stop,
@@ -36,6 +37,7 @@ enum Request {
     Release,
     Monitor(bool),
     Shutdown,
+    Record(std::path::PathBuf, bool),
 }
 struct Event {
     snapshot: Snapshot,
@@ -76,14 +78,17 @@ impl Runtime {
                             Err(_) => break,
                         }
                     };
-                    let result = match request.map(|(_, request)| request) {
+                    let result = match request.as_ref().map(|(_, request)| request) {
+                        Some(Request::Record(path, restore)) => {
+                            controller.attach_record(path.clone(), *restore)
+                        }
                         Some(Request::Start) => controller.start(),
                         Some(Request::Stop) => controller.stop(),
                         Some(Request::Force) => controller.force(),
                         Some(Request::Release) => controller.release(),
                         Some(Request::Shutdown) => break,
                         Some(Request::Monitor(enabled)) => {
-                            monitoring = enabled;
+                            monitoring = *enabled;
                             if !enabled {
                                 continue;
                             }
@@ -122,6 +127,10 @@ impl Runtime {
             .context("Compose worker stopped; ownership is uncertain")?;
         self.pending.insert(id);
         Ok(id)
+    }
+    pub fn record(&mut self, path: std::path::PathBuf, restore: bool) -> Result<()> {
+        let id = self.request(Request::Record(path, restore))?;
+        self.wait(id)
     }
     pub fn monitor(&self, enabled: bool) {
         // This changes observation only, never service ownership or lifecycle.
@@ -185,7 +194,16 @@ impl Runtime {
         self.wait(id)
     }
     pub fn live(&self) -> bool {
+        // Outstanding operations retain lifecycle ownership until acknowledged.
         self.snapshot.live || !self.pending.is_empty()
+    }
+    pub fn begin_release(&mut self) -> Result<()> {
+        self.snapshot.error = None;
+        self.request(Request::Release).map(|_| ())
+    }
+    pub fn begin_force(&mut self) -> Result<()> {
+        self.cancel.store(true, Ordering::SeqCst);
+        self.request(Request::Force).map(|_| ())
     }
     pub fn busy(&self) -> bool {
         !self.pending.is_empty()

@@ -17,6 +17,8 @@ pub(super) enum Request {
     Assign(Uuid, Uuid),
     Unassign(Uuid, Uuid),
     Service(Uuid, Uuid, crate::services::Action),
+    KeepRunning(Uuid, bool),
+    Recover(Uuid, bool),
     Poll,
     StopAndQuit,
     LeaveAndQuit,
@@ -29,6 +31,106 @@ impl From<winvd::DesktopEvent> for Request {
 }
 
 pub(super) fn refresh_status(window: &AppWindow, state: &State) {
+    let recovery = state
+        .workspace
+        .recovery
+        .iter()
+        .find(|problem| Some(problem.project) == state.selected);
+    window.set_recovery_busy(recovery.is_some_and(|problem| problem.busy));
+    window.set_recovery_message(
+        recovery
+            .map(|problem| problem.message.clone())
+            .unwrap_or_default()
+            .into(),
+    );
+    let rows = state
+        .data
+        .projects
+        .iter()
+        .map(|project| ProjectRow {
+            name: project.name.clone().into(),
+            folder: project
+                .folder
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "No folder".into())
+                .into(),
+            status: if state
+                .workspace
+                .recovery
+                .iter()
+                .any(|problem| problem.project == project.id)
+            {
+                "Recovery needed"
+            } else if state
+                .workspace
+                .workloads
+                .iter()
+                .any(|(id, view)| *id == project.id && view.error)
+            {
+                "Needs attention"
+            } else if state.workspace.active == Some(project.id) {
+                "Active"
+            } else if state.workspace.open.contains(&project.id) {
+                "Open"
+            } else {
+                ""
+            }
+            .into(),
+        })
+        .collect();
+    window.set_projects(update_rows(window.get_projects(), rows));
+    let session = state
+        .workspace
+        .sessions
+        .iter()
+        .find(|session| Some(session.project) == state.selected);
+    window.set_workspace_busy(
+        (!window.get_session_host_enabled() || window.get_session_connected())
+            && session.is_some_and(|session| session.busy),
+    );
+    window.set_keep_running(session.is_some_and(|session| session.keep_running));
+    window.set_countdown(
+        session
+            .map(|session| {
+                if session.automatically_stopped {
+                    let services: Vec<_> = state
+                        .workspace
+                        .workloads
+                        .iter()
+                        .filter(|(id, view)| {
+                            *id == session.project && view.kind != "Startup action"
+                        })
+                        .map(|(_, view)| view)
+                        .collect();
+                    if services.iter().any(|view| view.error) {
+                        "Auto-stop needs attention"
+                    } else if services.iter().any(|view| view.live) {
+                        "Auto-stop in progress…"
+                    } else {
+                        "Services auto-stopped"
+                    }
+                    .to_owned()
+                } else {
+                    session
+                        .remaining_seconds
+                        .map(|seconds| format!("Auto-stop in {}:{:02}", seconds / 60, seconds % 60))
+                        .unwrap_or_default()
+                }
+            })
+            .unwrap_or_default()
+            .into(),
+    );
+    window.set_changes_pending(session.is_some_and(|session| {
+        state
+            .data
+            .projects
+            .iter()
+            .find(|project| Some(project.id) == state.selected)
+            .is_some_and(|project| {
+                crate::platform::workspace::setup_revision(project) != session.setup_revision
+            })
+    }));
     window.set_session_open(
         state
             .selected
@@ -47,6 +149,15 @@ pub(super) fn refresh_status(window: &AppWindow, state: &State) {
         .iter()
         .filter(|entry| Some(entry.project) == state.selected)
         .map(|entry| SessionAppRow {
+            icon_key: super::icons::key(
+                entry.executable.as_deref().unwrap_or_default(),
+                entry.app_id.as_deref().unwrap_or_default(),
+            )
+            .into(),
+            icon: super::icons::get(&super::icons::key(
+                entry.executable.as_deref().unwrap_or_default(),
+                entry.app_id.as_deref().unwrap_or_default(),
+            )),
             id: entry.app.to_string().into(),
             name: entry.name.clone().into(),
             assigned: entry.title.is_some(),
@@ -55,7 +166,7 @@ pub(super) fn refresh_status(window: &AppWindow, state: &State) {
             shared: entry.shared,
         })
         .collect();
-    window.set_session_apps(ModelRc::new(VecModel::from(apps)));
+    window.set_session_apps(update_rows(window.get_session_apps(), apps));
     service_forms::refresh_runtime(window, state);
 }
 
@@ -114,7 +225,12 @@ pub(super) fn form_apps(window: &AppWindow) -> Vec<AppDraft> {
     window.get_apps().iter().collect()
 }
 
-pub(super) fn set_apps(window: &AppWindow, apps: Vec<AppDraft>) {
+pub(super) fn set_apps(window: &AppWindow, mut apps: Vec<AppDraft>) {
+    for app in &mut apps {
+        let target = super::icons::key(&app.executable, &app.app_id);
+        app.icon = super::icons::get(&target);
+        app.icon_key = target.into();
+    }
     window.set_apps(ModelRc::new(VecModel::from(apps)));
     window.set_dirty(true);
 }
@@ -142,6 +258,37 @@ pub(super) fn pick(window: &AppWindow, folder: bool) -> Result<Option<PathBuf>> 
 pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>, persistent: bool) {
     let (sender, receiver) = mpsc::channel::<Request>();
     state.lock().unwrap().launcher = Some(sender.clone());
+    let recovery_state = state.clone();
+    let weak = window.as_weak();
+    window.on_recovery_action(move |leave| {
+        if let Some(window) = weak.upgrade() {
+            let state = recovery_state.lock().unwrap();
+            if let Some(id) = state.selected {
+                window.set_workspace_busy(true);
+                let _ = state
+                    .launcher
+                    .as_ref()
+                    .unwrap()
+                    .send(Request::Recover(id, leave));
+            }
+            window.set_resolve_confirmed(false);
+        }
+    });
+    let keep_state = state.clone();
+    let weak = window.as_weak();
+    window.on_toggle_keep_running(move |keep| {
+        if let Some(window) = weak.upgrade() {
+            let state = keep_state.lock().unwrap();
+            if let Some(id) = state.selected {
+                let _ = state
+                    .launcher
+                    .as_ref()
+                    .unwrap()
+                    .send(Request::KeepRunning(id, keep));
+            }
+            window.set_keep_running(keep);
+        }
+    });
     if persistent {
         let journal = state.lock().unwrap().store.session_journal();
         super::connection::start(window, state.clone(), receiver, journal);
@@ -177,6 +324,34 @@ pub(super) fn setup(window: &AppWindow, state: Arc<Mutex<State>>, persistent: bo
                 let mut quit = false;
                 let completed = match request {
                     Request::LeaveAndQuit => continue,
+                    Request::Recover(id, leave) => {
+                        let result = if leave {
+                            workspaces.leave_unmanaged(id)
+                        } else {
+                            workspaces.retry_recovery(id)
+                        };
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(message) => summary.message = message,
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
+                        };
+                        true
+                    }
+                    Request::KeepRunning(id, keep) => {
+                        let result = workspaces.keep_running(id, keep);
+                        summary = workspaces.summary();
+                        match result {
+                            Ok(message) => summary.message = message,
+                            Err(error) => {
+                                summary.message = format!("{error:#}");
+                                summary.error = true;
+                            }
+                        };
+                        true
+                    }
                     Request::Open(project, relaunch) => {
                         let result = workspaces.open(project, relaunch);
                         summary = workspaces.summary();

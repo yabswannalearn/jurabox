@@ -34,6 +34,7 @@ pub(crate) fn fixture(folder: &Path) -> Result<WorkloadConfig> {
         .context("Missing Program Files")?
         .join("Docker/Docker/resources/bin/docker.exe");
     Ok(WorkloadConfig {
+        environment: Default::default(),
         id: Uuid::new_v4(),
         name: "Compose fixture".into(),
         kind: WorkloadKind::DockerCompose,

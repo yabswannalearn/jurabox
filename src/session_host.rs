@@ -2,9 +2,13 @@
 //! Crash recovery uses write-ahead command capabilities, never PID/name adoption.
 mod check;
 mod identity;
+mod maintenance;
 mod pipe;
 mod recovery_check;
+mod updates;
+pub use check::performance as performance_check;
 pub use check::run as check;
+pub(crate) use maintenance::snapshot_directory;
 pub use recovery_check::run as recovery_check;
 
 use crate::{
@@ -29,12 +33,15 @@ use uuid::Uuid;
 #[derive(Clone, Serialize, Deserialize)]
 pub enum Request {
     Snapshot,
+    Updates(Option<Uuid>, bool),
     Open(Project, bool),
     Close(Uuid),
     Windows(Uuid, Uuid, Uuid),
     Assign(Uuid, Uuid),
     Unassign(Uuid, Uuid),
     Service(Uuid, Uuid, Action),
+    KeepRunning(Uuid, bool),
+    Recover(Uuid, bool),
     LeaveAndQuit,
     StopAndQuit,
 }
@@ -44,6 +51,10 @@ pub struct Response {
     pub summary: Summary,
     pub choices: Option<std::result::Result<Vec<WindowOption>, String>>,
     pub quit: bool,
+    #[serde(default)]
+    pub unchanged: bool,
+    #[serde(default)]
+    pub logs: Vec<updates::LogPatch>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -54,6 +65,10 @@ struct Journal {
     generation: Uuid,
     token: Uuid,
     projects: Vec<Project>,
+    #[serde(default)]
+    protocol: u32,
+    #[serde(default)]
+    binary_stamp: String,
 }
 
 impl Journal {
@@ -96,6 +111,10 @@ impl Journal {
         Ok(())
     }
     fn validate_owner(&self) -> Result<()> {
+        ensure!(
+            self.protocol == 3 && self.binary_stamp == executable_stamp()?,
+            "A different Jurabox build owns these sessions. Stop services and quit that build before updating."
+        );
         let own = identity::inspect(std::process::id())?;
         ensure!(
             self.identity.executable == own.executable && self.identity.session == own.session,
@@ -110,19 +129,16 @@ impl Journal {
 
     fn allow_recovery(&self) -> Result<()> {
         ensure!(
-            self.version == 2,
+            !identity::inspect(self.identity.pid).is_ok_and(|identity| identity == self.identity),
+            "The original host is still alive. Stop services and quit the original Jurabox before replacing its executable."
+        );
+        ensure!(
+            matches!(self.version, 1 | 2),
             "The lost session uses an older record without command ownership capabilities. Its record has been preserved; new launches are blocked."
         );
         ensure!(
             self.identity.executable == identity::inspect(std::process::id())?.executable,
             "The saved session belongs to another Jurabox installation; its record has been preserved."
-        );
-        ensure!(
-            !self.projects.iter().any(|project| project
-                .workloads
-                .iter()
-                .any(|workload| workload.kind == crate::projects::WorkloadKind::DockerCompose)),
-            "The lost session includes Docker containers. Docker crash recovery is not available yet; its record has been preserved and new launches are blocked."
         );
         Ok(())
     }
@@ -191,6 +207,58 @@ impl Client {
     }
 
     pub fn request(&mut self, request: Request) -> Result<Response> {
+        let recovery = matches!(request, Request::Snapshot);
+        let wait = match &request {
+            Request::Close(id) => Some((*id, None)),
+            Request::Open(project, true) => Some((project.id, None)),
+            Request::Service(project, service, Action::Stop | Action::ForceStop) => {
+                Some((*project, Some(*service)))
+            }
+            Request::StopAndQuit => Some((Uuid::nil(), None)),
+            _ => None,
+        };
+        let mut response = self.request_async(request)?;
+        loop {
+            let pending =
+                if recovery && response.summary.recovery.iter().any(|problem| problem.busy) {
+                    true
+                } else if let Some((project, service)) = wait {
+                    if project.is_nil() {
+                        !response.quit && !response.summary.error
+                    } else if let Some(service) = service {
+                        response.summary.workloads.iter().any(|(id, view)| {
+                            *id == project && view.id == service && view.status == "Stopping"
+                        })
+                    } else {
+                        response
+                            .summary
+                            .sessions
+                            .iter()
+                            .any(|state| state.project == project && state.busy)
+                    }
+                } else {
+                    false
+                };
+            if !pending {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+            response = self.request_async(Request::Snapshot)?;
+        }
+        if let Some((project, Some(service))) = wait
+            && let Some((_, view)) = response
+                .summary
+                .workloads
+                .iter()
+                .find(|(id, view)| *id == project && view.id == service && view.error)
+        {
+            response.summary.message = view.detail.clone();
+            response.summary.error = true;
+        }
+        Ok(response)
+    }
+
+    pub fn request_async(&mut self, request: Request) -> Result<Response> {
         pipe::write(&mut self.file, &(self.journal.token, request)).context(
             "Lost the session connection. The operation may have started; it will not be replayed.",
         )?;
@@ -218,6 +286,7 @@ fn serve(mut pipe: File, journal: Journal, sender: mpsc::Sender<Event>) -> Resul
         if let Ok(pid) = pipe::accept(&pipe, &journal.identity) {
             // A valid token is required before the host resumes monitoring.
             let mut attached = false;
+            let mut updates = updates::Updates::default();
             while let Ok((token, request)) = pipe::read::<(Uuid, Request)>(&mut pipe) {
                 if token != journal.token {
                     break;
@@ -226,17 +295,31 @@ fn serve(mut pipe: File, journal: Journal, sender: mpsc::Sender<Event>) -> Resul
                     sender.send(Event::Connected(pid))?;
                     attached = true;
                 }
+                let selected = if let Request::Updates(project, force) = &request {
+                    Some((*project, *force))
+                } else {
+                    None
+                };
+                let request = if selected.is_some() {
+                    Request::Snapshot
+                } else {
+                    request
+                };
                 let detach = matches!(request, Request::LeaveAndQuit);
-                let stop_host = matches!(request, Request::StopAndQuit);
                 let (reply, response) = mpsc::sync_channel(1);
                 sender.send(Event::Command(request, reply))?;
-                let response = response.recv()?;
+                let mut response = response.recv()?;
+                if let Some((project, force)) = selected {
+                    updates.prepare(&mut response, project, force);
+                } else {
+                    updates = Default::default();
+                }
                 let quit = response.quit;
                 let written = pipe::write(&mut pipe, &response);
                 if quit && written.is_ok() {
                     pipe::drain(&pipe);
                 }
-                if stop_host && quit {
+                if quit && !detach {
                     sender.send(Event::Exit)?;
                     return written;
                 }
@@ -261,6 +344,9 @@ fn serve(mut pipe: File, journal: Journal, sender: mpsc::Sender<Event>) -> Resul
 }
 
 pub fn run(path: &Path) -> Result<()> {
+    if let Err(error) = maintenance::prune_snapshots() {
+        eprintln!("Snapshot cleanup deferred: {error:#}");
+    }
     ensure!(
         path.is_absolute(),
         "The session journal must have an absolute path."
@@ -277,13 +363,23 @@ pub fn run(path: &Path) -> Result<()> {
         .context("Another session host owns these settings.")?;
     let root = path.with_extension("sessions");
     let previous = Journal::read(path)?;
+    if let Some(previous) = &previous
+        && !previous.projects.is_empty()
+    {
+        let archive = path.with_extension("archive");
+        fs::create_dir_all(&archive)?;
+        let original = archive.join(format!("{}.json", previous.generation));
+        if !original.exists() {
+            fs::copy(path, original)?;
+        }
+    }
     let recovering = previous
         .as_ref()
         .is_some_and(|journal| !journal.projects.is_empty());
     let mut workspaces =
         if let Some(previous) = previous.filter(|journal| !journal.projects.is_empty()) {
             previous.allow_recovery()?;
-            Workspaces::recover(root, &previous.projects)?
+            Workspaces::recover_async(root, &previous.projects)?
         } else {
             Workspaces::recorded(root)
         };
@@ -293,6 +389,8 @@ pub fn run(path: &Path) -> Result<()> {
         generation: Uuid::new_v4(),
         token: Uuid::new_v4(),
         projects: workspaces.setups(),
+        protocol: 3,
+        binary_stamp: executable_stamp()?,
     };
     let pipe = pipe::create(&journal.pipe_name())?;
     journal.save(path)?;
@@ -306,14 +404,32 @@ pub fn run(path: &Path) -> Result<()> {
     let mut recovery_notice = recovering.then(|| if journal.projects.is_empty() {
         "The previous sessions have ended. Choose a project to open; nothing was started automatically.".to_string()
     } else {
-        "Recovered the original command sessions. Missing services stay stopped. Use Start or Retry when ready; previous output is unavailable.".to_string()
+        "Verifying the original sessions. Missing services stay stopped; use Start or Retry when ready.".to_string()
     });
     let mut choices: Option<(Uuid, WindowChoices)> = None;
     let mut attached = false;
+    let mut quit_pending = false;
     let mut next_poll = Instant::now();
+    let mut next_windows = Instant::now();
     loop {
         if attached && workspaces.service_activity() && Instant::now() >= next_poll {
             summary.workloads = workspaces.poll_services();
+            summary.sessions = workspaces.session_states();
+            summary.active = workspaces.active_id();
+            if let Some((message, error)) = workspaces.take_lifecycle_notice() {
+                summary = workspaces.summary();
+                summary.message = message;
+                summary.error = error;
+            }
+            let setups = workspaces.setups();
+            if journal.projects != setups {
+                journal.projects = setups;
+                if let Err(error) = workspaces.checkpoint().and_then(|()| journal.save(path)) {
+                    summary.message =
+                        format!("Cannot save session state: {error:#}. Keep Jurabox open.");
+                    summary.error = true;
+                }
+            }
             next_poll = Instant::now() + Duration::from_millis(500);
         }
         let event = if attached && workspaces.service_activity() {
@@ -380,10 +496,33 @@ pub fn run(path: &Path) -> Result<()> {
                 let mut options = None;
                 let mut finish_host = false;
                 let snapshot = matches!(request, Request::Snapshot);
-                let save = !matches!(request, Request::Snapshot | Request::Windows(..));
+                let mut save = !matches!(request, Request::Snapshot | Request::Windows(..));
                 let result =
                     match request {
-                        Request::Snapshot => Ok(String::new()),
+                        Request::Updates(..) => {
+                            unreachable!("Update requests are normalized by the pipe adapter")
+                        }
+                        Request::Snapshot => {
+                            if Instant::now() >= next_windows {
+                                summary.apps = workspaces.app_views();
+                                summary.active = workspaces.active_id();
+                                next_windows = Instant::now() + Duration::from_secs(2);
+                            }
+                            if quit_pending && let Some(result) = workspaces.exit_result() {
+                                quit_pending = false;
+                                save = true;
+                                match result {
+                                    Ok(()) => {
+                                        quit = true;
+                                        finish_host = true;
+                                        Ok("Managed services stopped.".into())
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            } else {
+                                Ok(String::new())
+                            }
+                        }
                         Request::Open(project, relaunch) => {
                             // Record intent before any process or container can be created.
                             // A host crash during partial startup must block replacement.
@@ -391,12 +530,20 @@ pub fn run(path: &Path) -> Result<()> {
                                 journal.projects.push(project.clone());
                             }
                             match journal.save(path) {
-                                Ok(()) => workspaces.open(project, relaunch),
+                                Ok(()) => workspaces.open_async(project, relaunch),
                                 Err(error) => Err(error
                                     .context("Cannot record session ownership; launch blocked.")),
                             }
                         }
-                        Request::Close(id) => workspaces.close(id),
+                        Request::Close(id) => workspaces.close_async(id),
+                        Request::Recover(id, leave) => {
+                            if leave {
+                                workspaces.leave_unmanaged(id)
+                            } else {
+                                workspaces.retry_recovery(id)
+                            }
+                        }
+                        Request::KeepRunning(id, keep) => workspaces.keep_running(id, keep),
                         Request::Service(project, workload, action) => {
                             workspaces.service_action(project, workload, action)
                         }
@@ -430,17 +577,16 @@ pub fn run(path: &Path) -> Result<()> {
                                 .into(),
                         )
                         }
-                        Request::StopAndQuit => workspaces.stop_for_exit().map(|()| {
-                            quit = true;
-                            finish_host = true;
-                            "Managed services stopped.".into()
-                        }),
+                        Request::StopAndQuit => {
+                            quit_pending = true;
+                            workspaces.begin_exit()
+                        }
                     };
                 // Snapshot requests use cached metadata; only lifecycle changes scan windows.
                 if !matches!(&result, Ok(message) if message.is_empty()) || options.is_some() {
                     summary = workspaces.summary();
                 }
-                if !snapshot {
+                if !snapshot || save {
                     summary.message.clear();
                     summary.error = false;
                     match result {
@@ -473,10 +619,39 @@ pub fn run(path: &Path) -> Result<()> {
                     summary: summary.clone(),
                     choices: options,
                     quit,
+                    unchanged: false,
+                    logs: Vec::new(),
                 });
             }
         }
     }
+}
+
+pub fn archive_lost_record(path: &Path) -> Result<()> {
+    ensure!(path.is_absolute(), "Use an absolute runtime record path.");
+    let _lock = OpenOptions::new().write(true).create(true).truncate(false).share_mode(0)
+        .open(path.with_extension("lock")).context("The original host is still running. Reconnect and stop that Jurabox before resolving its record.")?;
+    let archive = path.with_extension("archive");
+    fs::create_dir_all(&archive)?;
+    if path.exists() {
+        fs::rename(
+            path,
+            archive.join(format!("resolved-{}.json", Uuid::new_v4())),
+        )?;
+    }
+    Ok(())
+}
+
+fn executable_stamp() -> Result<String> {
+    let metadata = fs::metadata(std::env::current_exe()?)?;
+    Ok(format!(
+        "{}-{}",
+        metadata.len(),
+        metadata
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ))
 }
 
 fn bail_response(message: &str) -> Result<String> {
@@ -496,6 +671,8 @@ mod tests {
             generation: Uuid::new_v4(),
             token: Uuid::new_v4(),
             projects: Vec::new(),
+            protocol: 3,
+            binary_stamp: executable_stamp().unwrap(),
         };
         for bytes in [b"{".to_vec(), serde_json::to_vec(&future).unwrap()] {
             fs::write(&path, &bytes).unwrap();

@@ -2,12 +2,14 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
+mod portable;
 mod workloads;
+pub(crate) use workloads::compose_control_variable;
 pub use workloads::{CommandSpec, ComposeConfig, Readiness, WorkloadConfig, WorkloadKind};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -234,13 +236,23 @@ impl Project {
 pub struct ProjectFile {
     pub version: u32,
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub preferences: Preferences,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preferences {
+    pub start_with_windows: bool,
+    pub mute_failures: bool,
 }
 
 impl Default for ProjectFile {
     fn default() -> Self {
         Self {
-            version: 7,
+            version: 8,
             projects: Vec::new(),
+            preferences: Default::default(),
         }
     }
 }
@@ -264,7 +276,7 @@ impl ProjectFile {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 7,
+            self.version == 8,
             "This project file uses unsupported version {}. Keep the file and use a compatible Jurabox version.",
             self.version
         );
@@ -306,8 +318,16 @@ impl ProjectStore {
     }
 
     pub fn load(&self) -> Result<ProjectFile> {
-        let bytes = match fs::read(&self.path) {
-            Ok(bytes) => bytes,
+        let bytes = match fs::File::open(&self.path) {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                file.take(8 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() <= 8 * 1024 * 1024,
+                    "Settings exceed 8 MiB. The file has been preserved."
+                );
+                bytes
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(ProjectFile::default());
             }
@@ -321,8 +341,8 @@ impl ProjectStore {
                 self.path.display()
             )
         })?;
-        if matches!(data.version, 1..=6) {
-            data.version = 7;
+        if matches!(data.version, 1..=7) {
+            data.version = 8;
         }
         data.validate()?;
         Ok(data)
@@ -400,7 +420,7 @@ mod tests {
         fs::write(&path, &old).unwrap();
         let store = ProjectStore::new(path.clone());
         let data = store.load().unwrap();
-        assert_eq!(data.version, 7);
+        assert_eq!(data.version, 8);
         assert!(data.projects[0].apps.is_empty() && data.projects[0].browser.is_none());
         assert_eq!(fs::read_to_string(&path).unwrap(), old);
         store.save(&data).unwrap();
@@ -568,11 +588,11 @@ mod tests {
     #[test]
     fn unsupported_versions_and_duplicate_ids_are_rejected() {
         let mut data = ProjectFile {
-            version: 8,
+            version: 999,
             ..Default::default()
         };
         assert!(data.validate().is_err());
-        data.version = 7;
+        data.version = 8;
         let entry = project("First");
         data.projects.extend([entry.clone(), entry]);
         assert!(data.validate().is_err());

@@ -71,6 +71,7 @@ impl Container {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Plan {
     pub document: Value,
     pub order: Vec<String>,

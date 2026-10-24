@@ -1,0 +1,28 @@
+name: Windows checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - shell: pwsh
+        run: ./scripts/package.ps1 -SkipBuild
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jurabox-windows-pilot
+          path: |
+            target/release-artifacts/*.zip
+            target/release-artifacts/*.sha256

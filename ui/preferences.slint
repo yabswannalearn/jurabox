@@ -1,0 +1,52 @@
+import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+export component PreferencesDialog inherits Rectangle {
+    in-out property <bool> start-with-windows;
+    in-out property <bool> mute-failures;
+    in-out property <bool> export-values;
+    in-out property <string> import-path;
+    in-out property <string> remap-from;
+    in-out property <string> remap-to;
+    in property <bool> busy;
+    in property <string> notice;
+    in property <bool> notice-error;
+    callback save(); callback close(); callback browse-import(); callback import-projects(); callback export-projects();
+    background: #22313d80;
+    TouchArea { clicked => {} }
+    Rectangle {
+        width: min(parent.width - 48px, 640px); height: min(parent.height - 48px, 640px);
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        background: #ffffff; border-radius: 8px;
+        VerticalLayout {
+            padding: 22px; spacing: 14px;
+            Text { text: "Preferences & portability"; font-family: "Bahnschrift"; font-size: 24px; color: #22313d; }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 12px; alignment: start;
+                    CheckBox { text: "Start quietly in the tray when I sign in"; checked <=> root.start-with-windows; enabled: !root.busy; }
+                    CheckBox { text: "Mute failure notifications"; checked <=> root.mute-failures; enabled: !root.busy; }
+                    Button { text: "Save preferences"; enabled: !root.busy; clicked => { root.save(); } }
+                    Rectangle { height: 1px; background: #d8e1e8; }
+                    Text { text: "Export saved projects"; color: #22313d; font-size: 17px; font-weight: 600; }
+                    Text { text: "Exports contain saved configuration only. Environment values, launch/stop arguments, browser links, and HTTP health URLs are omitted by default. Review any export before sharing it."; color: #65778d; font-size: 12px; wrap: word-wrap; }
+                    CheckBox { text: "Include arguments, links, and environment values"; checked <=> root.export-values; enabled: !root.busy; }
+                    Button { text: "Choose export folder…"; enabled: !root.busy; clicked => { root.export-projects(); } }
+                    Rectangle { height: 1px; background: #d8e1e8; }
+                    Text { text: "Import project copies"; color: #22313d; font-size: 17px; font-weight: 600; }
+                    Text { text: "Adds new copies without changing existing projects or running sessions. Review paths and restore omitted values before opening them."; color: #65778d; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        LineEdit { text <=> root.import-path; placeholder-text: "Project export file (.json)"; enabled: !root.busy; }
+                        Button { text: "Browse…"; enabled: !root.busy; clicked => { root.browse-import(); } }
+                    }
+                    Text { text: "Optional folder remapping"; color: #22313d; font-size: 13px; }
+                    LineEdit { text <=> root.remap-from; placeholder-text: "Old folder prefix, e.g. D:\\Projects"; enabled: !root.busy; }
+                    LineEdit { text <=> root.remap-to; placeholder-text: "New folder prefix, e.g. E:\\Work"; enabled: !root.busy; }
+                    Button { text: "Import project copies"; enabled: !root.busy && root.import-path != ""; clicked => { root.import-projects(); } }
+                }
+            }
+            if root.notice != "": Text { text: root.notice; color: root.notice-error ? #922d25 : #65778d; font-size: 12px; wrap: word-wrap; }
+            Button { text: "Done"; enabled: !root.busy; clicked => { root.close(); } }
+        }
+    }
+}

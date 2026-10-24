@@ -11,6 +11,8 @@ struct Saved {
     status: Status,
     job: Option<Uuid>,
     stop_job: Option<Uuid>,
+    #[serde(default)]
+    auto_stopped: bool,
 }
 
 impl Entry {
@@ -22,6 +24,7 @@ impl Entry {
                 status: self.status,
                 job: self.job,
                 stop_job: self.stop_job,
+                auto_stopped: self.auto_stopped,
             })?;
         }
         Ok(())
@@ -40,6 +43,7 @@ impl Entry {
         );
         self.job = saved.job;
         self.stop_job = saved.stop_job;
+        self.auto_stopped = saved.auto_stopped && self.config.kind != WorkloadKind::StartupAction;
         let record = self
             .record
             .as_ref()
@@ -54,7 +58,7 @@ impl Entry {
             .map(|claim| ManagedProcess::recover(claim, &record.claim_path(claim)))
             .transpose()?
             .flatten();
-        self.recovered = true;
+        self.recovered = self.config.kind != WorkloadKind::DockerCompose;
         self.ready = false;
         self.status = if active(&self.stop_process) {
             Status::StopFailed
@@ -64,8 +68,12 @@ impl Entry {
                 Status::Stopping | Status::StopFailed | Status::Stopped
             ) {
                 Status::StopFailed
-            } else if self.config.kind == WorkloadKind::CommandService
+            } else if self.config.kind != WorkloadKind::StartupAction
                 && self.config.readiness == Readiness::ProcessRunning
+                && self
+                    .compose
+                    .as_ref()
+                    .is_none_or(compose::Runtime::available)
             {
                 self.ready = true;
                 Status::Running
@@ -108,16 +116,37 @@ impl Services {
     /// Each session gets a fresh directory. All initial records are flushed before
     /// the workspace manifest commits it or any startup scheduling is permitted.
     pub fn recorded(project: &Project, folder: &Path, restore: bool) -> Result<Self> {
+        Self::recorded_with_logon(project, folder, restore, false)
+    }
+    pub fn recorded_with_logon(
+        project: &Project,
+        folder: &Path,
+        restore: bool,
+        new_logon: bool,
+    ) -> Result<Self> {
         let mut services = Self::new(project)?;
         for entry in &mut services.entries {
-            if entry.config.kind == WorkloadKind::DockerCompose {
-                continue;
+            if let Some(compose) = &mut entry.compose {
+                compose.record(
+                    folder.join(format!("{}.compose.json", entry.config.id)),
+                    restore,
+                )?;
             }
             let mut record = Record::new(folder.join(format!("{}.json", entry.config.id)));
             if restore {
-                let saved = record
+                let mut saved = record
                     .read::<Saved>()?
                     .context("Missing service recovery record; replacement is blocked.")?;
+                if new_logon && entry.config.kind != WorkloadKind::DockerCompose {
+                    // A different verified logon cannot retain the original user
+                    // session processes. Docker has separate engine ownership.
+                    saved.job = None;
+                    saved.stop_job = None;
+                    saved.auto_stopped = false;
+                    if saved.status != Status::Completed {
+                        saved.status = Status::Stopped;
+                    }
+                }
                 entry.record = Some(record);
                 entry.restore(saved)?;
             } else {
@@ -141,6 +170,32 @@ impl Services {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verified_new_logon_leaves_missing_commands_stopped_without_replacement() {
+        let folder = tempfile::tempdir().unwrap();
+        let config = fixture_config(
+            &folder.path().join("service"),
+            "long",
+            WorkloadKind::CommandService,
+        )
+        .unwrap();
+        let mut project = Project::from_form(None, "Previous logon", "", None).unwrap();
+        let id = config.id;
+        project.workloads.push(config);
+        let records = folder.path().join("records");
+        Services::recorded(&project, &records, false).unwrap();
+        let path = records.join(format!("{id}.json"));
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["job"] = Uuid::new_v4().to_string().into();
+        record["status"] = "Running".into();
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(Services::recorded(&project, &records, true).is_err());
+        let recovered = Services::recorded_with_logon(&project, &records, true, true).unwrap();
+        assert!(!recovered.live());
+        assert_eq!(recovered.views()[0].status, "Stopped");
+        assert!(recovered.entries[0].process.is_none());
+    }
 
     #[test]
     fn ownership_write_failure_prevents_command_creation() {

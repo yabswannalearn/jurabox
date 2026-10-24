@@ -57,7 +57,7 @@ pub fn run(mode: &str, folder: &Path) -> Result<()> {
             );
             return Ok(());
         }
-        "long" | "flaky" | "flood" | "health" => {}
+        "long" | "flaky" | "flood" | "health" | "noisy" | "inactivity" => {}
         _ => anyhow::bail!("Unknown service fixture mode"),
     }
     let _ = fs::remove_file(folder.join("stop"));
@@ -76,7 +76,12 @@ pub fn run(mode: &str, folder: &Path) -> Result<()> {
     std::io::stdout().flush()?;
     let start = Instant::now();
     let mut listener = None;
-    while start.elapsed() < Duration::from_secs(60) && !folder.join("stop").exists() {
+    let lifetime = if mode == "inactivity" { 120 } else { 60 };
+    while start.elapsed() < Duration::from_secs(lifetime) && !folder.join("stop").exists() {
+        if mode == "noisy" {
+            println!("{}", "noisy-output-测试-".repeat(48));
+            std::io::stdout().flush()?;
+        }
         if mode == "health" && folder.join("allow-ready").exists() {
             if listener.is_none() {
                 let address = fs::read_to_string(folder.join("listen-address"))?;

@@ -1,10 +1,10 @@
 # Jurabox plan
 
-Last updated: 2026-10-18 (Asia/Shanghai).
+Last updated: 2026-10-24 (Asia/Shanghai).
 
 Repository: [yabswannalearn/jurabox](https://github.com/yabswannalearn/jurabox). The user selected this repository for the project on 2026-10-17.
 
-Status: product decisions accepted. The user accepted all recommendations Q01-Q28 in the [design decision record](DESIGN-QUESTIONS.md) and authorized starting development on 2026-10-18. Desktop integration, project configuration, app/link launching, switching, and manual window assignment are merged into main. The command-service/startup-action slice of milestone 3 is in development; real app compatibility, advanced service coordination, and lifecycle features remain in progress. See [implementation progress](PROGRESS.md) for executed checks and remaining work.
+Status: product decisions accepted. The Windows pilot now includes project/app setup, installed-app icons, workspace switching/assignment, owned command and Compose workloads, readiness/dependencies, original session reconnection, project-scoped recovery, inactivity/Keep running/reactivation, preferences/portability, and responsive lifecycle/status updates. The 2026-10-24 completion pass is under validation; actual reboot/logoff, broad app/elevation/scaling/accessibility pilots, and release measurements must be recorded separately from fixture evidence. See [implementation progress](PROGRESS.md) and the [completion checklist](IMPLEMENTATION-ROADMAP.md).
 
 Terminology: [domain glossary](../CONTEXT.md). Architecture: [Windows desktops](adr/0001-use-windows-virtual-desktops.md) and [Rust application with separate platform integration](adr/0002-rust-application-with-platform-modules.md).
 
@@ -225,7 +225,7 @@ Begin as one Rust application with separate modules for project rules, session/s
 | Full virtual desktop integration | winvd 0.0.49 for the initial desktop slice; basic operations validated on build 26200.9711, real app compatibility pending |
 | App and script launching | Explicit executables through Rust process APIs; native Windows console creation for interactive shells; shell scripts require a configured shell |
 | Process tracking | Windows Job Objects where suitable; not the universal ownership mechanism |
-| Settings/session persistence | Versioned JSON for saved settings and a separate host journal; original live sessions remain in a background Rust process across manager exits; cold recovery remains unfinished |
+| Settings/session persistence | Versioned JSON settings, separate ownership journals, a background session host, and project-scoped cold recovery with command/job and Compose/container verification |
 | macOS and Linux | Later platform integrations; none implemented for the initial Windows release |
 
 Project definitions and service/session rules remain separate from Windows-specific handles and desktop operations. The future platform targets justify this boundary without requiring a generic plugin system or distributed services.
@@ -260,13 +260,13 @@ Planned development milestones:
 4. Add inactivity policies, Keep running, graceful reactivation, persistence, reconnection, and crash recovery.
 5. Validate the complete personal pilot before broader distribution.
 
-The milestone 1 desktop compatibility tool passes its basic exercise. Milestone 2 now includes app/link configuration, executable/window matching, Open/Switch, deliberate relaunch, shared windows, session close, and explicit window assignment/unassignment. The chooser supports differing launcher and host executables, rejects stale identities, and protects private assignments across sessions. Runtime associations are in memory. App-specific launch adapters, the full installed-app pilot, and recovery remain follow-up work. Later service and lifecycle milestones remain planned. See [PROGRESS.md](PROGRESS.md) for executed validation.
+The desktop compatibility exercise passes basic control and owned-window movement. Project setup includes app/link configuration, Open/Switch, deliberate relaunch, shared windows, session close, and explicit window assignment/unassignment. The picker displays authentic Windows icons, supports differing launcher and host executables, rejects stale identities, and protects private assignments. Original verified window associations are included in session recovery. App-specific compatibility still needs a broader pilot. See [PROGRESS.md](PROGRESS.md) for executed validation.
 
-Milestone 3 includes owned foreground commands, startup actions, recent output, manual Start/Retry, normal Stop, explicit Force stop, and Close/Relaunch/Stop-and-quit integration. TCP/HTTP startup readiness and dependency coordination follow the [coordination ADR](adr/0005-coordinate-startup-readiness-and-dependencies.md). Local Linux Docker Desktop Compose support follows the [container ownership ADR](adr/0006-manage-owned-compose-containers.md). Environment overrides and richer progress/cancellation remain.
+Owned foreground commands, startup actions, bounded durable output, environment overrides, Start/Retry, normal Stop, explicit Force stop, and asynchronous Close/Relaunch/Stop-and-quit are implemented. TCP/HTTP startup readiness and dependency coordination follow the [coordination ADR](adr/0005-coordinate-startup-readiness-and-dependencies.md). Local Linux Docker Desktop Compose support follows the [container ownership ADR](adr/0006-manage-owned-compose-containers.md).
 
 Lifecycle work now includes a [background session host](adr/0007-retain-sessions-in-a-background-rust-process.md), verified reconnection to the same live sessions, and the leave-running exit. Original handles, setups, desktop/window associations, manual-stop state, and bounded output remain with that host. Queued starts are cancelled on disconnect; reopening does not start them automatically. Warm reconnection preserves the host's objects and output; the recovery work below covers a lost host.
 
-[Command-only host-failure recovery](adr/0008-recover-original-command-jobs.md) reopens original write-ahead job capabilities, pinned by a query-only command keeper, and restores verified desktop/window associations without launching anything. Manual stops and recorded successful actions survive; verified ended jobs and network readiness require explicit Start/Retry. If commands are verified stopped and the original windows/desktops are gone, the old session ends and the user chooses the next launch. A missing job without its completion seal remains uncertain and blocks replacements. Reboot/logoff recovery and validation, Docker/mixed-session crash recovery, durable output, and uncertain-record resolution remain open. Inactivity and Keep running follow those ownership guarantees.
+[Host-failure recovery](adr/0011-complete-session-lifecycle-and-recovery.md) verifies original command-job capabilities and Compose container/engine identities per project, using frozen session setup. Manual stops and successful actions survive; missing commands and network readiness require explicit Start/Retry. Uncertain records expose Retry and explicit leave-unmanaged controls. A verified new Windows logon leaves old user-session commands stopped; Docker is verified separately. Inactivity, Keep running, lock/sleep handling, automatic-only reactivation, conservative cleanup, preferences, portable configuration, packaging and CI are implemented. Actual reboot/logoff, accessibility, elevation and multiple-monitor coverage remain interactive pilot gates.
 
 ## Technical validation still required
 
